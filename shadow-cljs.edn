@@ -1,0 +1,9 @@
+;; Standalone test build for the canonical kotobase-client library.
+;; Consumers (aozora PDS/AppView/SPA, kami-genko) add "src" to their own
+;; :source-paths instead of depending on this build.
+{:source-paths ["src" "test"]
+ :dependencies []
+ :builds
+ {:test {:target :node-test
+         :output-to "out/node-tests.js"
+         :ns-regexp "-test$"}}}

@@ -1,0 +1,151 @@
+(ns kotobase.client-request-test
+  "Locks the wire envelope the client sends to kotobase.net: URL, method,
+  headers (CACAO / x-kotoba-did), and JSON body for q/datoms/pull/transact.
+  A fake fetch captures the request; no network. Complements cacao-test (which
+  proves the signature) by pinning the request shape the edge dispatches on."
+  (:require [cljs.test :refer-macros [deftest is testing async]]
+            [clojure.string :as str]
+            ["@noble/curves/ed25519.js" :refer [ed25519]]
+            [kotobase.cid :as cid]
+            [kotobase.client :as kc]))
+
+(def seed (js/Uint8Array.from (clj->js (range 32))))
+(def op-did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 seed)))
+
+;; fake fetch returning a canned 200 JSON; records the last (url, opts).
+(defn- capturing-fetch [sink]
+  (fn [url opts]
+    (reset! sink {:url url :opts (or opts #js {})})
+    (js/Promise.resolve
+     #js {:ok true :status 200
+          :text (fn [] (js/Promise.resolve "{\"ok\":true,\"datoms\":[]}"))})))
+
+(defn- body-of [sink]
+  (js->clj (js/JSON.parse (or (some-> @sink :opts .-body) "{}"))
+           :keywordize-keys true))
+(defn- header-of [sink k] (aget (.-headers (:opts @sink)) k))
+(defn- url-of [sink] (:url @sink))
+
+(def endpoint "https://kotobase.net")
+
+(deftest transact-request-envelope
+  (async done
+    (let [sink (atom nil)
+          c (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                             :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/transact c "yoro-social" "[{:db/id -1 :yoro.post/uri \"at://x\"}]")
+          (.then (fn [_]
+                   (let [b (body-of sink)]
+                     (is (= (str endpoint "/xrpc/ai.gftd.apps.kotobase.datomic.transact") (url-of sink)))
+                     (is (= "POST" (.-method (:opts @sink))))
+                     (is (= "yoro-social" (:db_name b)))
+                     (is (= "[{:db/id -1 :yoro.post/uri \"at://x\"}]" (:tx_edn b)))
+                     (is (string? (:cacao_b64 b)) "write carries a CACAO in the body")
+                     (is (str/starts-with? (header-of sink "authorization") "CACAO "))
+                     (is (= (:did c) (header-of sink "x-kotoba-did")))
+                     (done))))))))
+
+(deftest q-and-pull-request-envelopes
+  (async done
+    (let [sink (atom nil)
+          c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did
+                             :public-reads? true :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/q c "yoro-social" "{:find [?u] :where [[?e :yoro.post/uri ?u]]}")
+          (.then (fn [_]
+                   (let [b (body-of sink)]
+                     (is (str/ends-with? (url-of sink) "datomic.q"))
+                     (is (= "{:find [?u] :where [[?e :yoro.post/uri ?u]]}" (:query_edn b)))
+                     (is (= (cid/canonical-graph op-did "yoro-social") (:graph b))))))
+          (.then (fn [_] (kc/pull c "yoro-social" "123" "[:db/id :yoro.post/text]")))
+          (.then (fn [_]
+                   (let [b (body-of sink)]
+                     (is (str/ends-with? (url-of sink) "datomic.pull"))
+                     (is (= "123" (:entity b)))
+                     (is (= "[:db/id :yoro.post/text]" (:pattern_edn b)))
+                     (done))))))))
+
+(deftest transact-requires-write-client
+  ;; a public/read-only client (no :secret-key) must refuse to transact.
+  (let [c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did :public-reads? true})]
+    (is (thrown? js/Error (kc/transact c "yoro-social" "[]")))))
+
+;; ── transient-5xx retry (kotoba-wasm "Invalid array buffer length" flake) ─────
+;; Exercised via `q` (not `datoms`): the PDS test bundle globally stubs
+;; kotobase.client/datoms with a canned-result double, which would shadow the
+;; real retry path here. `q`/`transact` are un-stubbed and share the same
+;; with-retry wrapper, so they pin the behavior faithfully.
+
+(defn- flaky-fetch
+  "Fetch that returns HTTP 500 for the first `fail-n` calls, then 200. `calls`
+  counts total invocations."
+  [calls fail-n body-json]
+  (fn [_url _opts]
+    (let [n (swap! calls inc)]
+      (if (<= n fail-n)
+        (js/Promise.resolve
+         #js {:ok false :status 500
+              :text (fn [] (js/Promise.resolve "{\"ok\":false,\"error\":\"Invalid array buffer length\"}"))})
+        (js/Promise.resolve
+         #js {:ok true :status 200 :text (fn [] (js/Promise.resolve body-json))})))))
+
+(defn- read-client [fetch-fn]
+  (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did
+                   :public-reads? true :fetch-fn fetch-fn}))
+
+(deftest read-retries-transient-5xx
+  (async done
+    (let [calls (atom 0)
+          c (read-client (flaky-fetch calls 3 "{\"rows_edn\":[[\"x\"]]}"))]
+      ;; 3 transient 500s then success — the read must resolve, not reject.
+      (-> (kc/q c "yoro-social" "{:find [?u]}")
+          (.then (fn [^js resp]
+                   (is (= 4 @calls) "retried 3× then succeeded on the 4th call")
+                   (is (= 1 (.-length (.-rows_edn resp))) "returns the eventual success body")
+                   (done)))
+          (.catch (fn [e] (is false (str "should have retried through the flake: " e)) (done)))))))
+
+(deftest read-gives-up-after-max-retries
+  (async done
+    (let [calls (atom 0)
+          c (read-client (flaky-fetch calls 99 ""))]     ; always 500
+      (-> (kc/q c "yoro-social" "{:find [?u]}")
+          (.then (fn [_] (is false "a persistent 500 must eventually reject") (done)))
+          (.catch (fn [^js e]
+                    (is (= 500 (.-status e)) "surfaces the 5xx after exhausting retries")
+                    (is (<= @calls 4) "bounded retry budget (≤4 attempts)")
+                    (done)))))))
+
+(deftest read-does-not-retry-404
+  (async done
+    ;; 404 = empty graph (never written) → empty result, NOT a retry storm.
+    (let [calls (atom 0)
+          c (read-client (fn [_ _]
+                           (swap! calls inc)
+                           (js/Promise.resolve
+                            #js {:ok false :status 404
+                                 :text (fn [] (js/Promise.resolve "not found"))})))]
+      (-> (kc/q c "yoro-social" "{:find [?u]}")
+          (.then (fn [^js resp]
+                   (is (= 1 @calls) "404 is not retried")
+                   (is (= 0 (.-length (.-rows_edn resp))) "404 → empty rows")
+                   (done)))
+          (.catch (fn [e] (is false (str "404 should map to empty, not reject: " e)) (done)))))))
+
+(deftest transact-retries-only-when-opted-in
+  (async done
+    (let [calls (atom 0)
+          c (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                             :fetch-fn (flaky-fetch calls 2 "{\"ok\":true}")})]
+      ;; default: no retry → the first 500 rejects.
+      (-> (kc/transact c "yoro-social" "[{:db/id \"k/1\" :a 1}]")
+          (.then (fn [_] (is false "default transact must not retry") (done)))
+          (.catch (fn [^js e]
+                    (is (= 500 (.-status e)))
+                    (is (= 1 @calls) "single attempt without :retry?")
+                    ;; opt-in: idempotent keyed re-assert retries through the flake.
+                    (reset! calls 0)
+                    (-> (kc/transact c "yoro-social" "[{:db/id \"k/1\" :a 1}]" {:retry? true})
+                        (.then (fn [_]
+                                 (is (= 3 @calls) "2 transient 500s then commit")
+                                 (done)))
+                        (.catch (fn [e2] (is false (str "opt-in transact should retry: " e2)) (done))))))))))

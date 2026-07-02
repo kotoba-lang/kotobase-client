@@ -1,0 +1,6 @@
+{:paths ["src"]
+ ;; Portable .cljc — consumed as a shadow-cljs :source-path by the aozora PDS /
+ ;; AppView / SPA workers and by kami-genko. No JVM deps; npm deps
+ ;; (@noble/curves, @noble/hashes, @ipld/dag-cbor) are provided by the consumer's
+ ;; package.json (see this repo's package.json for the standalone test build).
+ :deps {}}
