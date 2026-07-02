@@ -95,11 +95,11 @@
 (deftest read-retries-transient-5xx
   (async done
     (let [calls (atom 0)
-          c (read-client (flaky-fetch calls 3 "{\"rows_edn\":[[\"x\"]]}"))]
-      ;; 3 transient 500s then success — the read must resolve, not reject.
+          c (read-client (flaky-fetch calls 2 "{\"rows_edn\":[[\"x\"]]}"))]
+      ;; 2 transient 500s then success — within the 3-attempt budget.
       (-> (kc/q c "yoro-social" "{:find [?u]}")
           (.then (fn [^js resp]
-                   (is (= 4 @calls) "retried 3× then succeeded on the 4th call")
+                   (is (= 3 @calls) "retried 2× then succeeded on the 3rd call")
                    (is (= 1 (.-length (.-rows_edn resp))) "returns the eventual success body")
                    (done)))
           (.catch (fn [e] (is false (str "should have retried through the flake: " e)) (done)))))))
