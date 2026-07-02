@@ -81,17 +81,34 @@
 (defn- transient-5xx? [^js err]
   (let [s (.-status err)] (and (number? s) (>= s 500))))
 
+(defn- jittered
+  "backoff-ms ± up to 40%, so concurrent retriers don't hammer the same warm
+  isolate in lockstep."
+  [backoff-ms]
+  (max 0 (long (* backoff-ms (+ 0.8 (* 0.4 (js/Math.random)))))))
+
 (defn- with-retry
   "Retry a Promise-returning thunk on transient 5xx. Non-5xx (e.g. 404/403/401)
-  reject immediately so empty-on-404 and auth handling are unaffected."
-  ([thunk] (with-retry thunk 4 120))
+  reject immediately so empty-on-404 and auth handling are unaffected.
+
+  Kept LIGHT on purpose. Measured behaviour: the wasm worker's failures are
+  CORRELATED within any feasible synchronous window — spacing 5 retries over
+  ~10 s failed at the SAME ~25% rate as a sub-second burst, just far slower. So
+  aggressive backoff only adds latency; it can't break the floor (the graph is
+  near the isolate memory limit and ~1-in-4 full-loads fail regardless of
+  timing). This retry catches the genuinely-independent transients (smoothing
+  the 40-90% spikes to the ~25% floor) while failing fast; jitter avoids
+  lockstep. The durable fix is server-side (ADR-2607022330 addendum): the wasm
+  worker must honour components_edn/limit (it ignores them today) or stream the
+  export / compact the graph, so a read stops rehydrating the whole DB."
+  ([thunk] (with-retry thunk 3 250))
   ([thunk tries backoff-ms]
    (-> (thunk)
        (.catch (fn [^js err]
                  (if (and (> tries 1) (transient-5xx? err))
-                   (-> (js/Promise. (fn [res] (js/setTimeout res backoff-ms)))
+                   (-> (js/Promise. (fn [res] (js/setTimeout res (jittered backoff-ms))))
                        (.then (fn [_] (with-retry thunk (dec tries)
-                                        (min 1500 (* 2 backoff-ms))))))
+                                        (min 1200 (* 2 backoff-ms))))))
                    (throw err)))))))
 
 ;; ── reads ────────────────────────────────────────────────────────────────────
