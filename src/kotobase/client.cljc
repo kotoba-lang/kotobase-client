@@ -194,6 +194,28 @@
          do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn} cacao-b64)]
      (if retry? (with-retry do-post) (do-post)))))
 
+(defn fold
+  "Maintenance fold: compact `db-name`'s accumulated novelty into a fresh indexed
+  snapshot (ADR-2607032430 D1). A cron/ops op — the D1 write path appends O(tx)
+  novelty blocks that every read merges, so an un-folded graph's reads slow as
+  novelty grows; a periodic fold keeps them fast. Head-mutating, so gated like a
+  transact (mints a `datom:transact` CACAO); names the graph directly
+  (`kotobase/db/<operator-did>/<db-name>`), unlike transact's server-derived
+  graph. Idempotent/no-op when there is nothing to fold, so safe on a schedule.
+  → the worker's `{:ok :graph :folded [:commit :novelty_folded]}` response."
+  ([client db-name] (fold client db-name nil))
+  ([client db-name {:keys [ttl-sec] :or {ttl-sec 300}}]
+   (when-not (:secret-key client)
+     (throw (js/Error. "fold needs a :secret-key (write) client")))
+   (let [graph (cid/canonical-graph (:did client) db-name)
+         cacao-b64 (:cacao-b64 (cacao/mint-cacao {:secret-key (:secret-key client)
+                                                  :aud (:operator-did client)
+                                                  :capability "datom:transact"
+                                                  :extra-capabilities ["tx:create"]
+                                                  :graph graph
+                                                  :ttl-sec ttl-sec}))]
+     (post client "fold" {:graph graph} cacao-b64))))
+
 ;; ── EDN scalar decode (rows_edn / v_edn cells → cljs values) ─────────────────
 
 (defn decode-edn-scalar
