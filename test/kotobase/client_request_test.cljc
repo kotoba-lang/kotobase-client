@@ -131,6 +131,47 @@
                    (done)))
           (.catch (fn [e] (is false (str "404 should map to empty, not reject: " e)) (done)))))))
 
+(deftest transact-rejects-on-2xx-body-ok-false
+  ;; The bug this locks: a kotobase XRPC handler can report a LOGICAL failure
+  ;; (e.g. run-transact's ConcurrentWriteConflict after exhausting its head-CAS
+  ;; retries) over an ordinary HTTP 200 — the request itself was handled fine.
+  ;; A caller checking only res.ok/HTTP status sees success; confirmed live
+  ;; 2026-07-03, a masked failure like this let aozora.pds.repo/create-record
+  ;; report a fabricated uri/cid to its OWN caller while the write had
+  ;; actually failed and said so in its own body.
+  (async done
+    (let [calls (atom 0)
+          c (kc/make-client
+             {:endpoint endpoint :secret-key seed :operator-did op-did
+              :fetch-fn (fn [_url _opts]
+                          (swap! calls inc)
+                          (js/Promise.resolve
+                           #js {:ok true :status 200
+                                :text (fn [] (js/Promise.resolve
+                                             "{\"ok\":false,\"error\":\"ConcurrentWriteConflict\",\"message\":\"head CAS lost the race 8 times\"}"))}))})]
+      (-> (kc/transact c "yoro-social" "[{:db/id \"k/1\" :a 1}]")
+          (.then (fn [_] (is false "a 200 with body ok:false must reject, not resolve") (done)))
+          (.catch (fn [^js e]
+                    (is (= 1 @calls))
+                    (is (= 200 (.-status e)) "HTTP status the request actually got")
+                    (is (str/includes? (.-message e) "ConcurrentWriteConflict"))
+                    (is (str/includes? (.-message e) "head CAS lost the race 8 times"))
+                    (is (false? (.-ok (.-body e))) "the parsed body is attached for callers that want it")
+                    (done)))))))
+
+(deftest datoms-with-ok-true-body-resolves-normally
+  ;; Sanity: the fix must not reject a perfectly normal ok:true response.
+  (async done
+    (let [c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did
+                             :public-reads? true
+                             :fetch-fn (fn [_ _]
+                                         (js/Promise.resolve
+                                          #js {:ok true :status 200
+                                               :text (fn [] (js/Promise.resolve "{\"ok\":true,\"datoms\":[]}"))}))})]
+      (-> (kc/datoms c "yoro-social" ":eavt")
+          (.then (fn [^js resp] (is (= 0 (.-length (.-datoms resp)))) (done)))
+          (.catch (fn [e] (is false (str "ok:true must resolve: " e)) (done)))))))
+
 (deftest transact-retries-only-when-opted-in
   (async done
     (let [calls (atom 0)

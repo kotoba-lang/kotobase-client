@@ -45,7 +45,19 @@
 (defn- post
   "POST one datomic method. Returns a Promise of the parsed JSON body, or
   rejects with the HTTP status + text on non-2xx (the edge/pod return
-  text/plain for auth/guard rejections, so we surface status before parsing)."
+  text/plain for auth/guard rejections, so we surface status before parsing).
+  ALSO rejects on a 2xx response whose parsed body carries `\"ok\":false`
+  (the handler dispatch shape every kotobase XRPC method uses for a LOGICAL
+  failure — e.g. transact's ConcurrentWriteConflict on a lost head-CAS race —
+  served over an ordinary HTTP 200, since the request itself was handled
+  fine). A caller checking only `res.ok`/HTTP status, as this fn used to,
+  treats that as success: confirmed live 2026-07-03, an etzhayyim actor
+  mass-identify's createRecord calls kept returning a fabricated 200+uri+cid
+  while the underlying transact had actually failed and reported so in its
+  own body — every downstream caller (aozora.pds.repo/create-record chief
+  among them) built its response from LOCALLY computed values instead of the
+  transact result, masking the failure end-to-end. Fixing it here, once,
+  covers every caller of transact/datoms/q/pull uniformly."
   [client method body cacao-b64]
   (let [{:keys [endpoint fetch did]} client
         headers #js {"content-type" "application/json"}
@@ -60,11 +72,19 @@
         (.then (fn [^js res]
                  (.then (.text res)
                         (fn [text]
-                          (if (.-ok res)
-                            (if (seq text) (js/JSON.parse text) #js {})
+                          (if-not (.-ok res)
                             (let [e (js/Error. (str method " " (.-status res) ": " text))]
                               (set! (.-status e) (.-status res))
-                              (throw e))))))))))
+                              (throw e))
+                            (let [^js parsed (if (seq text) (js/JSON.parse text) #js {})]
+                              (if (false? (.-ok parsed))
+                                (let [e (js/Error. (str method " " (.-status res) " ok:false "
+                                                        (or (.-error parsed) "LogicalFailure")
+                                                        (when (.-message parsed) (str ": " (.-message parsed)))))]
+                                  (set! (.-status e) (.-status res))
+                                  (set! (.-body e) parsed)
+                                  (throw e))
+                                parsed))))))))))
 
 ;; A graph with no Datomic/IPNS head yet (never written) reads as empty rather
 ;; than an error — mirrors kotoba.cljc fetchDatoms' 404 handling.
