@@ -14,6 +14,12 @@ CID/graph derivation:
   can't drift.
 - `kotobase.cid` — did:key ⇄ Ed25519 pubkey, base58btc/base32, and
   `canonical-graph` (operator's `kotobase/db/<did>/<db-name>` CID).
+- `kotobase.ipns` — sign/verify a signed IPNS head record
+  (ADR-2607061800), the `:cljs` counterpart to `kotoba-lang/tech-ipfs-
+  specs-ipns`'s `:clj`-only `ipns.head`. Verified byte-identical to the
+  JVM side for the same seed+record (canonical dag-cbor payload +
+  deterministic Ed25519 signature) against a real JVM-signed fixture,
+  not just cljs self-consistency.
 
 Runs in the browser SPA and the cljs Cloudflare Workers (workerd/node) — global
 `fetch` + Web Crypto in both.
