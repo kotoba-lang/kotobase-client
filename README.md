@@ -4,6 +4,14 @@ Canonical, portable **ClojureScript client for the kotobase.net tenant Datom
 plane** (`ai.gftd.apps.kotobase.datomic.*`) plus its byte-exact CACAO auth and
 CID/graph derivation:
 
+**Disambiguation (ADR-2607050900):** not to be confused with
+[`kotobase`](https://github.com/kotoba-lang/kotobase) (the server-side
+`IStore` port / umbrella datom database this client talks to) or
+[`kotoba-client`](https://github.com/kotoba-lang/kotoba-client) (a separate,
+*generic, non-CACAO* CID-verified block ingest/hydrate client over kotoba's
+content graph, consumed by `p2p` — no relation to the CACAO-authed
+kotobase.net tenant plane this repo is specific to).
+
 - `kotobase.client` — `q` / `datoms` / `pull` reads and `transact` writes over
   the operator db, minting `datom:read` / `datom:transact` CACAOs. Transient
   5xx from the kotoba-wasm tenant worker (its "Invalid array buffer length"
