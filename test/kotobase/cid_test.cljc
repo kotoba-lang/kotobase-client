@@ -40,6 +40,15 @@
         "pub → did:key → pub round-trips")
     (is (nil? (cid/did-key->ed25519-pub "did:web:x")) "non-did:key → nil")))
 
+(deftest did-key-with-malformed-base58-payload-returns-nil
+  (testing "a did:key:z... string whose base58 payload contains a
+            character outside the base58btc alphabet (base58btc-decode
+            itself throws) must still resolve to nil, per this fn's own
+            \"or nil when the DID isn't an Ed25519 did:key\" contract --
+            not propagate a raw uncaught exception"
+    (is (nil? (cid/did-key->ed25519-pub "did:key:zInvalid0DID")))
+    (is (nil? (cid/did-key->ed25519-pub "did:key:zOI0lIllegalChars")))))
+
 (deftest graph-cid-deterministic
   (let [a (cid/canonical-graph "did:key:zABC" "people")
         b (cid/canonical-graph "did:key:zABC" "people")

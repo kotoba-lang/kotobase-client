@@ -89,11 +89,15 @@
 
 (defn did-key->ed25519-pub
   "did:key:z<base58btc(0xed 0x01 || pub32)> → the 32-byte Ed25519 public key,
-  or nil when the DID isn't an Ed25519 did:key."
+  or nil when the DID isn't an Ed25519 did:key -- including when the
+  base58 payload itself is malformed (base58btc-decode throws on a
+  character outside its alphabet), not just when the decoded multicodec
+  header is wrong."
   [^string did]
   (when (str/starts-with? did "did:key:z")
-    (let [mc (base58btc-decode (subs did (count "did:key:z")))]
-      (when (and (>= (alength mc) 34) (= 0xed (aget mc 0)) (= 0x01 (aget mc 1)))
+    (let [mc (try (base58btc-decode (subs did (count "did:key:z")))
+                  (catch js/Error _ nil))]
+      (when (and mc (>= (alength mc) 34) (= 0xed (aget mc 0)) (= 0x01 (aget mc 1)))
         (.slice mc 2 34)))))
 
 (defn did-key-from-ed25519-pub
