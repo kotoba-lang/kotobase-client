@@ -1,6 +1,12 @@
 {:paths ["src"]
- ;; Portable .cljc — consumed as a shadow-cljs :source-path by the aozora PDS /
- ;; AppView / SPA workers and by kami-genko. No JVM deps; npm deps
- ;; (@noble/curves, @noble/hashes, @ipld/dag-cbor) are provided by the consumer's
- ;; package.json (see this repo's package.json for the standalone test build).
- :deps {}}
+ ;; cljs-only (no reader-conditionals) -- consumed as a shadow-cljs
+ ;; :source-path by the aozora PDS / AppView / SPA workers and by
+ ;; kami-genko. No JVM deps; npm deps (@noble/curves, @noble/hashes,
+ ;; @ipld/dag-cbor) are provided by the consumer's package.json (see this
+ ;; repo's package.json for the standalone test build).
+ :deps {}
+ :aliases
+ {;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
+  :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
+         :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
+                     "--fail-level" "error"]}}}
