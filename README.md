@@ -12,11 +12,13 @@ CID/graph derivation:
 content graph, consumed by `p2p` — no relation to the CACAO-authed
 kotobase.net tenant plane this repo is specific to).
 
-- `kotobase.client` — `q` / `datoms` / `pull` reads and `transact` writes over
-  the operator db, minting `datom:read` / `datom:transact` CACAOs. Transient
-  5xx from the kotoba-wasm tenant worker (its "Invalid array buffer length"
-  db-load flake) are retried on idempotent reads; `transact` opts in via
-  `:retry?` for idempotent keyed re-asserts.
+- `kotobase.client` — `q` / `datoms` / `pull` reads, `transact` writes, and
+  `fold` (D1 maintenance: compacts accumulated novelty into a fresh indexed
+  snapshot — head-mutating like `transact`, but with no `:retry?` opt-in of
+  its own) over the operator db, minting `datom:read` / `datom:transact`
+  CACAOs. Transient 5xx from the kotoba-wasm tenant worker (its "Invalid
+  array buffer length" db-load flake) are retried on idempotent reads;
+  `transact` opts in via `:retry?` for idempotent keyed re-asserts.
 - `kotobase.cacao` — SIWE/EIP-4361 message + Ed25519 did:key CACAO, DAG-CBOR
   encoded. The SAME source the cljs PDS verifies with, so client and server
   can't drift.
@@ -54,5 +56,5 @@ Consumers provide the npm deps (`@noble/curves` v1, `@noble/hashes`,
 
 ```bash
 npm install
-npm test        # shadow-cljs :node-test — client (+retry) / cacao / cid
+npm test        # shadow-cljs :node-test — client (+retry, +fold) / cacao / cid / ipns
 ```
