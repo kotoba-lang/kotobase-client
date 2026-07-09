@@ -3,12 +3,41 @@
   (`ai.gftd.apps.kotobase.datomic.*`). Runs in both the browser SPA and the
   cljs Workers (workerd/node) — global `fetch` + Web Crypto are present in both.
 
-  Reads (`q`/`datoms`/`pull`) mint a `datom:read` CACAO by default (the
-  operator yoro-social db is private); pass `:public? true` to skip auth when
-  the graph is registered Public. Writes (`transact`) mint a
-  `datom:transact`+`tx:create` CACAO. The single client identity IS the
-  operator Ed25519 key, so `canonical-graph` resolves the operator's own
-  `kotobase/db/<operator-did>/<db-name>` (the only writable namespace)."
+  Reads (`q`/`datoms`/`pull`) mint a read CACAO by default (the operator
+  yoro-social db is private); pass `:public? true` to skip auth when the graph
+  is registered Public. Writes (`transact`) mint a write CACAO. The single
+  client identity IS the operator Ed25519 key, so `canonical-graph` resolves
+  the operator's own `kotobase/db/<operator-did>/<db-name>` (the only writable
+  namespace).
+
+  ── CACAO auth profiles (`make-client` `:auth-profile`) ─────────────────────
+  The kotobase.net APEX (net-kotobase clj-edge, cf-wasm cutover 2026-07-08)
+  gates every datomic.* call on a CACAO that (validate-cacao, live-probed
+  2026-07-09):
+    1. carries the `kotoba://can/kotobase:pin` capability,
+    2. carries a `kotoba://graph/` scope equal to the ISSUER DID (a graph-CID
+       scope without the issuer DID is REJECTED — \"CACAO graph scope does
+       not include issuer DID\"),
+    3. arrives with an `x-kotoba-did` header matching the issuer, and
+    4. uses a FRESH nonce per request (the edge records nonces in B2 for
+       replay protection — reusing one 401s).
+  This ns's pre-cutover mint (operation capability + graph-CID scope) fails
+  checks 1–2, so every stock caller was getting
+  `401 {\"ok\":false,\"error\":\"Unauthorized\"}` against the apex.
+
+  `:auth-profile :apex` (the DEFAULT) mints the edge shape: primary capability
+  `kotobase:pin`, the operation capabilities (`datom:read` /
+  `datom:transact`+`tx:create`) riding along as extras, graph scope = issuer
+  DID — the same shape yoro-ui.studio.genko-store proved live against the
+  apex (app-aozora ab21923, 2026-07-09). Request addressing is unchanged: the
+  body still names the canonical graph CID; only the CACAO scope moved. Every
+  mint (including each retry attempt) gets a fresh nonce.
+
+  `:auth-profile :legacy` keeps the pre-cutover byte shape (operation
+  capability primary, `kotoba://graph/<graph-cid>` scope, no kotobase:pin)
+  for endpoints that still verify it — e.g. a pod/tenant-worker lineage that
+  pre-dates the apex edge. Same fn signatures either way; the profile only
+  changes the minted CACAO."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
             [clojure.string :as str]
             [kotobase.cid :as cid]
@@ -21,26 +50,53 @@
   audience, e.g. \"did:web:kotobase.net\"), and an identity — either
   :secret-key (32-byte Uint8Array seed = operator write identity) or, for a
   read-only AppView against a Public graph, :did (the operator DID, used only
-  to derive the graph CID) + :public-reads? true. :fetch-fn optional."
-  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads?]}]
+  to derive the graph CID) + :public-reads? true. :fetch-fn optional.
+  :auth-profile optional — :apex (default; the kotobase.net edge CACAO shape)
+  or :legacy (pre-cutover shape; see ns docstring)."
+  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile]}]
   (when (and (nil? secret-key) (nil? did))
     (throw (js/Error. "make-client needs :secret-key or :did")))
   {:endpoint (str/replace endpoint #"/+$" "")
    :secret-key secret-key
    :operator-did operator-did
    :public-reads? (boolean public-reads?)
+   :auth-profile (or auth-profile :apex)
    :fetch (or fetch-fn js/fetch)
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
 
+(defn request-cacao
+  "Mint ONE request's CACAO (fresh nonce — never reuse across requests or
+  retry attempts; the apex records nonces for replay protection) granting
+  `op-caps` (e.g. [\"datom:read\"] / [\"datom:transact\" \"tx:create\"]) over
+  `graph`, shaped per the client's :auth-profile (ns docstring). nil when the
+  client has no :secret-key. Public so callers with custom methods (or a
+  bespoke transport) can mint the same auth the built-in q/datoms/pull/
+  transact/fold use."
+  ([client op-caps graph] (request-cacao client op-caps graph nil))
+  ([client op-caps graph {:keys [ttl-sec] :or {ttl-sec 300}}]
+   (when-let [secret-key (:secret-key client)]
+     (:cacao-b64
+      (if (= :legacy (:auth-profile client))
+        (cacao/mint-cacao {:secret-key secret-key
+                           :aud (:operator-did client)
+                           :capability (first op-caps)
+                           :extra-capabilities (vec (rest op-caps))
+                           :graph graph
+                           :ttl-sec ttl-sec})
+        ;; :apex — kotobase:pin primary, op caps as extras, ISSUER DID scope.
+        (cacao/mint-cacao {:secret-key secret-key
+                           :aud (:operator-did client)
+                           :capability "kotobase:pin"
+                           :extra-capabilities (vec op-caps)
+                           :graph (:did client)
+                           :ttl-sec ttl-sec}))))))
+
 (defn- read-cacao
-  "A datom:read CACAO for `graph`, or nil when the client reads Public graphs /
+  "A read CACAO for `graph`, or nil when the client reads Public graphs /
   has no signing key (then the request is sent unauthenticated)."
   [client graph]
-  (when (and (not (:public-reads? client)) (:secret-key client))
-    (:cacao-b64 (cacao/mint-cacao {:secret-key (:secret-key client)
-                                   :aud (:operator-did client)
-                                   :capability "datom:read"
-                                   :graph graph}))))
+  (when-not (:public-reads? client)
+    (request-cacao client ["datom:read"] graph)))
 
 (defn- post
   "POST one datomic method. Returns a Promise of the parsed JSON body, or
@@ -140,10 +196,12 @@
    (let [graph (cid/canonical-graph (:did client) db-name)
          body (cond-> {:graph graph :query_edn query-edn}
                 limit (assoc :limit limit)
-                offset (assoc :offset offset))
-         cacao (when-not public? (read-cacao client graph))]
+                offset (assoc :offset offset))]
+     ;; mint INSIDE the retry thunk — a fresh nonce per attempt (apex replay
+     ;; protection records nonces; reusing one across retries 401s).
      (empty-on-404 #js {:rows_edn #js []}
-                   (with-retry #(post client "q" body cacao))))))
+                   (with-retry #(post client "q" body
+                                      (when-not public? (read-cacao client graph))))))))
 
 (defn datoms
   "Index scan (`:eavt` / `:aevt` / `:avet` / `:vaet`) over the operator db.
@@ -153,10 +211,10 @@
    (let [graph (cid/canonical-graph (:did client) db-name)
          body (cond-> {:graph graph :index index}
                 (seq components) (assoc :components_edn (vec components))
-                limit (assoc :limit limit))
-         cacao (when-not public? (read-cacao client graph))]
+                limit (assoc :limit limit))]
      (empty-on-404 #js {:datoms #js []}
-                   (with-retry #(post client "datoms" body cacao))))))
+                   (with-retry #(post client "datoms" body
+                                      (when-not public? (read-cacao client graph))))))))
 
 (defn pull
   "Pull `pattern-edn` for `entity` from the operator db."
@@ -164,10 +222,10 @@
   ([client db-name entity pattern-edn {:keys [public?]}]
    (let [graph (cid/canonical-graph (:did client) db-name)
          body (cond-> {:graph graph :entity entity}
-                pattern-edn (assoc :pattern_edn pattern-edn))
-         cacao (when-not public? (read-cacao client graph))]
+                pattern-edn (assoc :pattern_edn pattern-edn))]
      (empty-on-404 #js {}
-                   (with-retry #(post client "pull" body cacao))))))
+                   (with-retry #(post client "pull" body
+                                      (when-not public? (read-cacao client graph))))))))
 
 ;; ── writes ───────────────────────────────────────────────────────────────────
 
@@ -185,13 +243,10 @@
    (when-not (:secret-key client)
      (throw (js/Error. "transact needs a :secret-key (write) client")))
    (let [graph (cid/canonical-graph (:did client) db-name)
-         cacao-b64 (:cacao-b64 (cacao/mint-cacao {:secret-key (:secret-key client)
-                                                  :aud (:operator-did client)
-                                                  :capability "datom:transact"
-                                                  :extra-capabilities ["tx:create"]
-                                                  :graph graph
-                                                  :ttl-sec ttl-sec}))
-         do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn} cacao-b64)]
+         ;; mint inside the thunk — fresh nonce per retry attempt (see q).
+         do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn}
+                        (request-cacao client ["datom:transact" "tx:create"] graph
+                                       {:ttl-sec ttl-sec}))]
      (if retry? (with-retry do-post) (do-post)))))
 
 (defn fold
@@ -207,14 +262,10 @@
   ([client db-name {:keys [ttl-sec] :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "fold needs a :secret-key (write) client")))
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         cacao-b64 (:cacao-b64 (cacao/mint-cacao {:secret-key (:secret-key client)
-                                                  :aud (:operator-did client)
-                                                  :capability "datom:transact"
-                                                  :extra-capabilities ["tx:create"]
-                                                  :graph graph
-                                                  :ttl-sec ttl-sec}))]
-     (post client "fold" {:graph graph} cacao-b64))))
+   (let [graph (cid/canonical-graph (:did client) db-name)]
+     (post client "fold" {:graph graph}
+           (request-cacao client ["datom:transact" "tx:create"] graph
+                          {:ttl-sec ttl-sec})))))
 
 ;; ── EDN scalar decode (rows_edn / v_edn cells → cljs values) ─────────────────
 

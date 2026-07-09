@@ -6,10 +6,20 @@
   ported from @gftd/kotobase-datomic (net-kotobase/sdk/kotobase-datomic/src/index.cljc).
 
   The signature is over a SIWE (CAIP-122) message; the CACAO envelope is
-  DAG-CBOR then base64. A transact CACAO must grant BOTH `datom:transact` and
-  `tx:create`; a read CACAO grants `datom:read`. Resources end with the target
-  `kotoba://graph/<graph-cid>` — the edge re-binds the graph from db_name so the
-  CACAO scope must match the caller's own `kotobase/db/<did>/<db-name>`."
+  DAG-CBOR then base64. `mint-cacao` is shape-agnostic — the capability set
+  and the `kotoba://graph/<...>` scope are the caller's choice, and WHICH
+  shape a verifier accepts differs by endpoint lineage (kotobase.client picks
+  per its :auth-profile — see that ns):
+
+  * apex (kotobase.net clj-edge / cf-wasm, live-probed 2026-07-09): requires
+    the `kotobase:pin` capability and a graph scope equal to the ISSUER DID —
+    pass :capability \"kotobase:pin\", the op caps as :extra-capabilities,
+    :graph = the issuer did:key.
+  * legacy pod/tenant-worker: operation capability (a transact CACAO must
+    grant BOTH `datom:transact` and `tx:create`; a read CACAO grants
+    `datom:read`) and a `kotoba://graph/<graph-cid>` scope matching the
+    caller's own `kotobase/db/<did>/<db-name>` (the edge re-binds the graph
+    from db_name so the scope must match)."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
             ["@ipld/dag-cbor" :as dag-cbor]
             [clojure.string :as str]
