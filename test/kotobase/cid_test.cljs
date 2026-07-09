@@ -49,6 +49,23 @@
     (is (nil? (cid/did-key->ed25519-pub "did:key:zInvalid0DID")))
     (is (nil? (cid/did-key->ed25519-pub "did:key:zOI0lIllegalChars")))))
 
+(deftest base32-lower-no-pad-rfc4648-vectors
+  (testing "the RFC4648 §10 test vectors (base32, padding stripped, then
+            lowercased to match this fn's alphabet) -- byte lengths 0..6
+            exercise every bit-alignment case the 5-bit-group accumulator
+            can hit, including the exact-multiple-of-5-bits boundary
+            (5 bytes = 40 bits = 8 whole groups, no leftover bits at all)
+            and the immediately-following case (6 bytes, 3 leftover bits)"
+    (let [->bytes (fn [^string s] (js/Uint8Array.from (.encode (js/TextEncoder.) s)))]
+      (is (= ""           (cid/base32-lower-no-pad (->bytes ""))))
+      (is (= "my"          (cid/base32-lower-no-pad (->bytes "f"))))
+      (is (= "mzxq"        (cid/base32-lower-no-pad (->bytes "fo"))))
+      (is (= "mzxw6"       (cid/base32-lower-no-pad (->bytes "foo"))))
+      (is (= "mzxw6yq"     (cid/base32-lower-no-pad (->bytes "foob"))))
+      (is (= "mzxw6ytb"    (cid/base32-lower-no-pad (->bytes "fooba")))
+          "5 bytes = 40 bits = 8 whole 5-bit groups -- zero leftover bits")
+      (is (= "mzxw6ytboi"  (cid/base32-lower-no-pad (->bytes "foobar")))))))
+
 (deftest graph-cid-deterministic
   (let [a (cid/canonical-graph "did:key:zABC" "people")
         b (cid/canonical-graph "did:key:zABC" "people")
