@@ -172,6 +172,66 @@
           (.then (fn [^js resp] (is (= 0 (.-length (.-datoms resp)))) (done)))
           (.catch (fn [e] (is false (str "ok:true must resolve: " e)) (done)))))))
 
+;; ── fold (D1 maintenance op, ADR-2607032430) ──────────────────────────────────
+;; No prior coverage at all — transact/q/pull/datoms are covered above, fold
+;; never was.
+
+(deftest fold-request-envelope
+  (async done
+    (let [sink (atom nil)
+          c (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                             :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/fold c "yoro-social")
+          (.then (fn [_]
+                   (let [b (body-of sink)]
+                     (is (str/ends-with? (url-of sink) "datomic.fold"))
+                     (is (= "POST" (.-method (:opts @sink))))
+                     (is (= (cid/canonical-graph op-did "yoro-social") (:graph b))
+                         "fold names the graph directly, unlike transact's server-derived graph")
+                     (is (nil? (:db_name b)) "fold's body carries :graph only, no :db_name")
+                     (is (string? (:cacao_b64 b)) "fold is head-mutating, so it carries a CACAO like transact")
+                     (is (str/starts-with? (header-of sink "authorization") "CACAO "))
+                     (is (= (:did c) (header-of sink "x-kotoba-did")))
+                     (done))))))))
+
+(deftest fold-requires-write-client
+  ;; a public/read-only client (no :secret-key) must refuse to fold, same as transact.
+  (let [c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did :public-reads? true})]
+    (is (thrown? js/Error (kc/fold c "yoro-social")))))
+
+(deftest fold-rejects-on-2xx-body-ok-false
+  ;; fold shares `post`'s ok:false handling — pins that a logical failure
+  ;; (e.g. the D1 fold op itself reporting a lost race) is not swallowed.
+  (async done
+    (let [c (kc/make-client
+             {:endpoint endpoint :secret-key seed :operator-did op-did
+              :fetch-fn (fn [_url _opts]
+                          (js/Promise.resolve
+                           #js {:ok true :status 200
+                                :text (fn [] (js/Promise.resolve
+                                             "{\"ok\":false,\"error\":\"FoldConflict\"}"))}))})]
+      (-> (kc/fold c "yoro-social")
+          (.then (fn [_] (is false "a 200 with body ok:false must reject, not resolve") (done)))
+          (.catch (fn [^js e]
+                    (is (= 200 (.-status e)))
+                    (is (str/includes? (.-message e) "FoldConflict"))
+                    (done)))))))
+
+(deftest fold-does-not-retry-transient-5xx
+  ;; Unlike transact, fold has no :retry? opt-in at all -- a single attempt,
+  ;; always. A transient 5xx must reject immediately (the caller's cron
+  ;; schedule is the retry mechanism, not fold itself).
+  (async done
+    (let [calls (atom 0)
+          c (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                             :fetch-fn (flaky-fetch calls 2 "{\"ok\":true}")})]
+      (-> (kc/fold c "yoro-social")
+          (.then (fn [_] (is false "fold must not retry a transient 5xx") (done)))
+          (.catch (fn [^js e]
+                    (is (= 500 (.-status e)))
+                    (is (= 1 @calls) "single attempt, no retry")
+                    (done)))))))
+
 (deftest transact-retries-only-when-opted-in
   (async done
     (let [calls (atom 0)
