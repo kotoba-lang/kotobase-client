@@ -199,6 +199,32 @@
   (let [c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did :public-reads? true})]
     (is (thrown? js/Error (kc/fold c "yoro-social")))))
 
+(deftest fold-max-novelty-request-envelope
+  ;; gftdcojp/app-aozora#78 / kotobase-peer#16: an ops/cron caller passes
+  ;; :max-novelty to bound the fold, threaded through as body :max_novelty.
+  (async done
+    (let [sink (atom nil)
+          c (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                             :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/fold c "yoro-social" {:max-novelty 50})
+          (.then (fn [_]
+                   (let [b (body-of sink)]
+                     (is (= 50 (:max_novelty b))
+                         "max-novelty threads through as :max_novelty in the POST body"))
+                   (done)))))))
+
+(deftest fold-without-max-novelty-omits-it-from-the-body
+  ;; unbounded (the default) must not send a :max_novelty key at all --
+  ;; the worker's do-fold treats a missing/nil value as unbounded.
+  (async done
+    (let [sink (atom nil)
+          c (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                             :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/fold c "yoro-social")
+          (.then (fn [_]
+                   (is (not (contains? (body-of sink) :max_novelty)))
+                   (done)))))))
+
 (deftest fold-rejects-on-2xx-body-ok-false
   ;; fold shares `post`'s ok:false handling — pins that a logical failure
   ;; (e.g. the D1 fold op itself reporting a lost race) is not swallowed.

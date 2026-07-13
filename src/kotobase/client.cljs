@@ -257,13 +257,21 @@
   transact (mints a `datom:transact` CACAO); names the graph directly
   (`kotobase/db/<operator-did>/<db-name>`), unlike transact's server-derived
   graph. Idempotent/no-op when there is nothing to fold, so safe on a schedule.
-  → the worker's `{:ok :graph :folded [:commit :novelty_folded]}` response."
+  `:max-novelty` (optional): bound the fold to the oldest that-many
+  not-yet-folded tx blocks (kotobase-peer#16 / gftdcojp/app-aozora#78) instead
+  of the unbounded default — this call still runs SERVER-SIDE inside the same
+  Worker's CPU/wall-time budget (it is a plain HTTP POST, not a local/offline
+  computation), so a backlog too large to fold in one unbounded pass needs
+  repeated bounded calls (a cron/ops driver), not a single unbounded one.
+  → the worker's `{:ok :graph :folded [:commit :novelty_folded
+  :novelty_remaining]}` response."
   ([client db-name] (fold client db-name nil))
-  ([client db-name {:keys [ttl-sec] :or {ttl-sec 300}}]
+  ([client db-name {:keys [ttl-sec max-novelty] :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "fold needs a :secret-key (write) client")))
-   (let [graph (cid/canonical-graph (:did client) db-name)]
-     (post client "fold" {:graph graph}
+   (let [graph (cid/canonical-graph (:did client) db-name)
+         body (cond-> {:graph graph} max-novelty (assoc :max_novelty max-novelty))]
+     (post client "fold" body
            (request-cacao client ["datom:transact" "tx:create"] graph
                           {:ttl-sec ttl-sec})))))
 
