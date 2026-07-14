@@ -6,4 +6,7 @@
  :builds
  {:test {:target :node-test
          :output-to "out/node-tests.js"
-         :ns-regexp "-test$"}}}
+         :ns-regexp "-test$"}
+  :live-e2e {:target :node-script
+             :output-to "out/live-e2e.js"
+             :main kotobase.live-e2e/main}}}
