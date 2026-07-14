@@ -44,6 +44,7 @@
             [kotobase.cacao :as cacao]))
 
 (def ^:private datomic-ns "ai.gftd.apps.kotobase.datomic")
+(def ^:private store-ns "net.kotobase.store")
 
 (defn make-client
   "opts: :endpoint (e.g. \"https://kotobase.net\"), :operator-did (CACAO
@@ -141,6 +142,70 @@
                                   (set! (.-body e) parsed)
                                   (throw e))
                                 parsed))))))))))
+
+(defn- post-store
+  "POST one portable IStore method with a freshly minted apex CACAO. Returns
+  the parsed wire envelope; public store helpers below project it back to the
+  five-method IStore contract while remaining Promise-based."
+  [client method body write?]
+  (when-not (:secret-key client)
+    (throw (js/Error. "IStore access needs a :secret-key client")))
+  (let [{:keys [endpoint fetch did]} client
+        caps (if write? ["datom:transact" "tx:create"] ["datom:read"])
+        cacao-b64 (request-cacao client caps did)
+        headers #js {"content-type" "application/json"
+                     "authorization" (str "CACAO " cacao-b64)
+                     "x-kotoba-did" did}]
+    (-> (fetch (str endpoint "/xrpc/" store-ns "." (name method))
+               #js {:method "POST" :headers headers
+                    :body (js/JSON.stringify (clj->js body))})
+        (.then (fn [^js response]
+                 (.then (.text response)
+                        (fn [text]
+                          (let [^js parsed (if (seq text) (js/JSON.parse text) #js {})]
+                            (if (and (.-ok response) (not (false? (.-ok parsed))))
+                              parsed
+                              (let [error (js/Error.
+                                           (str "store." (name method) " "
+                                                (.-status response) ": "
+                                                (or (.-error parsed) text)))]
+                                (set! (.-status error) (.-status response))
+                                (set! (.-body error) parsed)
+                                (throw error)))))))))))
+
+(defn store-put [client coll key value]
+  (-> (post-store client :put {:coll coll :key key :val value} true)
+      (.then (fn [^js body] (js->clj (.-val body) :keywordize-keys true)))))
+
+(defn store-get [client coll key]
+  (-> (post-store client :get {:coll coll :key key} false)
+      (.then (fn [^js body] (js->clj (.-val body) :keywordize-keys true)))))
+
+(defn store-list [client coll]
+  (-> (post-store client :list {:coll coll} false)
+      (.then (fn [^js body] (js->clj (.-keys body))))))
+
+(defn store-append [client stream event]
+  (-> (post-store client :append {:stream stream :event event} true)
+      (.then (fn [^js body] (js->clj (.-event body) :keywordize-keys true)))))
+
+(defn store-read [client stream since]
+  (-> (post-store client :read {:stream stream :since (or since 0)} false)
+      (.then (fn [^js body] (js->clj (.-events body) :keywordize-keys true)))))
+
+(defn store-xrpc
+  "Host-injected xrpc function for `kotobase.kotobase/kotobase-store`. Its
+  results are Promises of the bare IStore values, suitable for the
+  promise-aware code-graph adapter."
+  [client]
+  (fn [method params]
+    (case method
+      :put (store-put client (:coll params) (:key params) (:val params))
+      :get (store-get client (:coll params) (:key params))
+      :list (store-list client (:coll params))
+      :append (store-append client (:stream params) (:event params))
+      :read (store-read client (:stream params) (:since params))
+      (js/Promise.reject (js/Error. (str "unknown IStore method " method))))))
 
 ;; A graph with no Datomic/IPNS head yet (never written) reads as empty rather
 ;; than an error — mirrors kotoba.cljc fetchDatoms' 404 handling.

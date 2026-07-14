@@ -69,6 +69,42 @@
   (let [c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did :public-reads? true})]
     (is (thrown? js/Error (kc/transact c "yoro-social" "[]")))))
 
+(deftest promise-istore-adapter-projects-wire-envelopes
+  (async done
+    (let [calls (atom [])
+          responses (atom ["{\"ok\":true,\"val\":{\"x\":1}}"
+                           "{\"ok\":true,\"val\":{\"x\":1}}"
+                           "{\"ok\":true,\"keys\":[\"k\"]}"
+                           "{\"ok\":true,\"event\":{\"x\":2,\"seq\":1}}"
+                           "{\"ok\":true,\"events\":[{\"x\":2,\"seq\":1}]}"])
+          fetch-fn (fn [url opts]
+                     (swap! calls conj {:url url :opts opts})
+                     (let [body (first @responses)]
+                       (swap! responses subvec 1)
+                       (js/Promise.resolve
+                        #js {:ok true :status 200
+                             :text (fn [] (js/Promise.resolve body))})))
+          client (kc/make-client {:endpoint endpoint :secret-key seed
+                                  :operator-did op-did :fetch-fn fetch-fn})
+          xrpc (kc/store-xrpc client)]
+      (-> (xrpc :put {:coll "c" :key "k" :val {:x 1}})
+          (.then (fn [value] (is (= {:x 1} value))
+                   (xrpc :get {:coll "c" :key "k"})))
+          (.then (fn [value] (is (= {:x 1} value))
+                   (xrpc :list {:coll "c"})))
+          (.then (fn [keys] (is (= ["k"] keys))
+                   (xrpc :append {:stream "s" :event {:x 2}})))
+          (.then (fn [event] (is (= {:x 2 :seq 1} event))
+                   (xrpc :read {:stream "s" :since 0})))
+          (.then (fn [events]
+                   (is (= [{:x 2 :seq 1}] events))
+                   (is (every? #(str/includes? (:url %) "/xrpc/net.kotobase.store.") @calls))
+                   (is (every? #(str/starts-with?
+                                 (aget (.-headers (:opts %)) "authorization") "CACAO ")
+                               @calls))
+                   (done)))
+          (.catch (fn [error] (is false (str error)) (done)))))))
+
 ;; ── transient-5xx retry (kotoba-wasm "Invalid array buffer length" flake) ─────
 ;; Exercised via `q` (not `datoms`): the PDS test bundle globally stubs
 ;; kotobase.client/datoms with a canned-result double, which would shadow the

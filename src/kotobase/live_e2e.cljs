@@ -74,15 +74,29 @@
                          {:coll db-name :key "semantic-code" :val {:marker marker}}
                          ["datom:transact" "tx:create"])))
           (.then
-           (fn [_]
-             (store-post c "get" {:coll db-name :key "semantic-code"}
-                         ["datom:read"])))
-          (.then
            (fn [^js response]
-             (let [value (js->clj (or (.-val response) (.-value response))
-                                    :keywordize-keys true)]
+             (when-not (and (string? (.-cid response))
+                            (re-find #"^bafy" (.-cid response)))
+               (throw (js/Error. (str "store.put did not return a DAG-CBOR CID: "
+                                      (js/JSON.stringify response)))))
+             (client/store-get c db-name "semantic-code")))
+          (.then
+           (fn [value]
                (when-not (= marker (:marker value))
-                 (throw (js/Error. (str "store.get mismatch: "
-                                        (js/JSON.stringify response)))))
-               (js/console.log "PASS: real net.kotobase.store put/get" db-name))))
+                 (throw (js/Error. (str "store.get mismatch: " value))))
+               (js/console.log "PASS: real IPLD store put/get" db-name)
+               (js/Promise.all
+                (clj->js
+                 (mapv #(client/store-append c db-name {:index %}) (range 50))))))
+          (.then
+           (fn [events]
+             (let [seqs (->> (array-seq events) (map #(get % :seq)) sort vec)]
+               (when-not (= (vec (range 1 51)) seqs)
+                 (throw (js/Error. (str "concurrent append sequence mismatch: " seqs))))
+               (client/store-read c db-name 0))))
+          (.then
+           (fn [events]
+             (when-not (= (vec (range 1 51)) (mapv :seq events))
+               (throw (js/Error. (str "read sequence mismatch: " events))))
+             (js/console.log "PASS: real strict concurrent append/read" db-name)))
           (.catch fail!)))))
