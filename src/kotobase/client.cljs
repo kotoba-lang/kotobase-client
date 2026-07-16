@@ -281,6 +281,20 @@
                    (with-retry #(post client "datoms" body
                                       (when-not public? (read-cacao client graph))))))))
 
+(defn view
+  "Rows of a fold-materialized view (ADR-2607166600 IVM): one server-side
+  block read + fresh novelty merge, so it stays correct between folds.
+  Response mirrors `datoms` (`.-datoms` rows of {e a v_edn added}), plus
+  `.-spec`. The view must have been declared via `fold`'s `:views` opt;
+  an undeclared view rejects with ViewNotFound (post's ok:false path)."
+  ([client db-name view-name] (view client db-name view-name nil))
+  ([client db-name view-name {:keys [public?]}]
+   (let [graph (cid/canonical-graph (:did client) db-name)
+         body {:graph graph :view view-name}]
+     (empty-on-404 #js {:datoms #js []}
+                   (with-retry #(post client "view" body
+                                      (when-not public? (read-cacao client graph))))))))
+
 (defn pull
   "Pull `pattern-edn` for `entity` from the operator db."
   ([client db-name entity pattern-edn] (pull client db-name entity pattern-edn nil))
@@ -328,14 +342,21 @@
   Worker's CPU/wall-time budget (it is a plain HTTP POST, not a local/offline
   computation), so a backlog too large to fold in one unbounded pass needs
   repeated bounded calls (a cron/ops driver), not a single unbounded one.
+  `:views` (optional, ADR-2607166600): a map of view-name →
+  {\"attrs\" [attr …]} (nil spec removes that view) declaring the graph's
+  materialized views — sent as `views_edn`, re-derived by every subsequent
+  fold (stored specs carry forward when the opt is omitted), served by
+  `view`.
   → the worker's `{:ok :graph :folded [:commit :novelty_folded
   :novelty_remaining]}` response."
   ([client db-name] (fold client db-name nil))
-  ([client db-name {:keys [ttl-sec max-novelty] :or {ttl-sec 300}}]
+  ([client db-name {:keys [ttl-sec max-novelty views] :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "fold needs a :secret-key (write) client")))
    (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph} max-novelty (assoc :max_novelty max-novelty))]
+         body (cond-> {:graph graph}
+                max-novelty (assoc :max_novelty max-novelty)
+                views (assoc :views_edn (pr-str views)))]
      (post client "fold" body
            (request-cacao client ["datom:transact" "tx:create"] graph
                           {:ttl-sec ttl-sec})))))
