@@ -239,9 +239,13 @@
   near the isolate memory limit and ~1-in-4 full-loads fail regardless of
   timing). This retry catches the genuinely-independent transients (smoothing
   the 40-90% spikes to the ~25% floor) while failing fast; jitter avoids
-  lockstep. The durable fix is server-side (ADR-2607022330 addendum): the wasm
-  worker must honour components_edn/limit (it ignores them today) or stream the
-  export / compact the graph, so a read stops rehydrating the whole DB."
+  lockstep. The durable server-side fix has since LANDED (verified 2026-07-17,
+  ADR-2607167000 addendum 2): backend.kotobase.net is served by the
+  kotobase-server cljc handler (hot-datoms — components_edn/limit honoured,
+  range-pruned narrow reads), not the old whole-DB-rehydrating wasm build this
+  paragraph described; kotobase.aozora.app runs kotobase-cljc-worker (same
+  engine + immutable block cache + datomic.view). The retry stays as cheap
+  insurance for transient 5xx, no longer as a workaround for O(graph) reads."
   ([thunk] (with-retry thunk 3 250))
   ([thunk tries backoff-ms]
    (-> (thunk)
