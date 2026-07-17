@@ -291,9 +291,13 @@
   ([client db-name view-name {:keys [public?]}]
    (let [graph (cid/canonical-graph (:did client) db-name)
          body {:graph graph :view view-name}]
-     (empty-on-404 #js {:datoms #js []}
-                   (with-retry #(post client "view" body
-                                      (when-not public? (read-cacao client graph))))))))
+     ;; NO empty-on-404 (unlike datoms): a 404 head or ViewNotFound must
+     ;; REJECT so consumers with richer fallbacks (attr scans, full reads)
+     ;; actually take them — an empty-success here silently masks "view
+     ;; missing" as "graph empty" (observed live: appview served empty
+     ;; follower lists instead of falling back, ADR-2607167000 addendum).
+     (with-retry #(post client "view" body
+                        (when-not public? (read-cacao client graph)))))))
 
 (defn pull
   "Pull `pattern-edn` for `entity` from the operator db."
