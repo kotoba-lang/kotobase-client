@@ -77,3 +77,12 @@
 
 (deftest cacao-is-deterministic-given-fixed-nonce-and-time
   (is (= (:cacao-b64 (mint)) (:cacao-b64 (mint)))))
+
+(deftest tenant-resource-is-signed-when-requested
+  (let [{:keys [cacao-b64]}
+        (cacao/mint-cacao {:secret-key seed :aud aud :capability "datom:read"
+                           :graph graph :tenant "tenant-a" :now-ms 0
+                           :nonce "tenantnonce00001"})
+        env (.decode dag-cbor (cacao/base64->bytes cacao-b64))
+        resources (set (vec (.. env -p -resources)))]
+    (is (contains? resources "kotoba://tenant/tenant-a"))))
