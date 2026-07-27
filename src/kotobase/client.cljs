@@ -133,7 +133,16 @@
   has no signing key (then the request is sent unauthenticated)."
   [client graph]
   (when-not (:public-reads? client)
-    (request-cacao client ["datom:read"] graph)))
+    ;; BOTH vocabularies. The XRPC edge checks `datom:read`; since
+    ;; ADR-2607279500 that edge BRIDGES datomic.* to kotobase-storage-d1,
+    ;; whose own gate checks the literal `graph:query` and has no
+    ;; `kotobase:pin` concept. A CACAO carrying only the XRPC vocabulary
+    ;; reaches D1 and is rejected as `Unauthenticated` — which is what took
+    ;; every cloud-itonami-marketplace-* read down on 2026-07-27 the moment
+    ;; production set KOTOBASE_D1_*. Extra capabilities ride along harmlessly
+    ;; on the path that does not check them, so carrying both is strictly
+    ;; safer than guessing which side will answer.
+    (request-cacao client ["datom:read" "graph:query"] graph)))
 
 (defn- post
   "POST one datomic method. Returns a Promise of the parsed JSON body, or
@@ -187,7 +196,10 @@
   (when-not (:secret-key client)
     (throw (js/Error. "IStore access needs a :secret-key client")))
   (let [{:keys [endpoint fetch did]} client
-        caps (if write? ["datom:transact" "tx:create"] ["datom:read"])
+        ;; See `read-cacao`: both vocabularies, because the XRPC edge may
+        ;; answer or may bridge to kotobase-storage-d1, which names the same
+        ;; permissions differently.
+        caps (if write? ["datom:transact" "tx:create"] ["datom:read" "graph:query"])
         cacao-b64 (request-cacao client caps did)
         headers #js {"content-type" "application/json"
                      "authorization" (str "CACAO " cacao-b64)
