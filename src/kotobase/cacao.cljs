@@ -93,9 +93,17 @@
   opts: :secret-key (32-byte Uint8Array seed), :aud (operator DID),
         :capability (e.g. \"datom:transact\" / \"datom:read\"),
         :extra-capabilities (e.g. [\"tx:create\"]), :graph (graph CID),
-        :ttl-sec (default 300), :now-ms / :nonce (deterministic test overrides)."
-  [{:keys [secret-key aud capability extra-capabilities graph ttl-sec now-ms nonce]
-    :or {ttl-sec 300 extra-capabilities []}}]
+        :ttl-sec (default 300), :now-ms / :nonce (deterministic test overrides),
+        :sig-encoding — :base64url (default; the pod's decode_sig_bytes needs
+        URL_SAFE_NO_PAD, see ns docstring) or :base64 (plain, no URL-safe
+        substitution/padding-strip — kotobase-storage-d1's own
+        verifyAuthenticationCacao decodes the signature with plain atob(),
+        which does NOT understand base64url's `-`/`_` alphabet; a
+        base64url-encoded signature silently fails ed25519 verification
+        there with a generic 401 Unauthenticated, no specific error surfaced
+        to the caller — use :base64 for that verifier)."
+  [{:keys [secret-key aud capability extra-capabilities graph ttl-sec now-ms nonce sig-encoding]
+    :or {ttl-sec 300 extra-capabilities [] sig-encoding :base64url}}]
   (let [pub (.getPublicKey ed25519 secret-key)
         did (cid/did-key-from-ed25519-pub pub)
         now (if (some? now-ms) (js/Date. now-ms) (js/Date.))
@@ -108,9 +116,10 @@
            :nonce nonce :iat iat :exp exp :statement nil :resources resources}
         msg (cacao-siwe-message p)
         sig (.sign ed25519 (cid/text->bytes msg) secret-key)
+        sig-str (if (= :base64 sig-encoding) (bytes->base64 sig) (bytes->base64url sig))
         cacao #js {:h #js {:t "caip122"}
                    :p (clj->js p)
-                   :s #js {:t "EdDSA" :s (bytes->base64url sig)}}]
+                   :s #js {:t "EdDSA" :s sig-str}}]
     {:cacao-b64 (bytes->base64 (.encode dag-cbor cacao))
      :did did
      :graph graph}))

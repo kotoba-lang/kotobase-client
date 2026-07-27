@@ -269,7 +269,8 @@
   (when-let [secret-key (:secret-key client)]
     (:cacao-b64
      (cacao/mint-cacao {:secret-key secret-key :aud (:operator-did client)
-                        :capability capability :graph ref :ttl-sec ttl-sec}))))
+                        :capability capability :graph ref :ttl-sec ttl-sec
+                        :sig-encoding :base64}))))
 
 (defn- v1-post
   "POST one method's EDN body straight to a kotobase-storage-d1 deployment.
