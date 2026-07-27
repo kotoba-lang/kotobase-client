@@ -101,6 +101,21 @@
    :fetch (or fetch-fn js/fetch)
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
 
+(def default-ttl-sec
+  "How long a minted CACAO stays valid. 15 minutes, not 5.
+
+  A Worker's `Date.now()` does NOT advance freely — Cloudflare freezes it at
+  the time of the last I/O, so a cold isolate can mint with a clock that is
+  minutes stale. With a 5-minute window that CACAO can already be expired
+  when it arrives, and the apex answers a bare 401 — intermittently, only on
+  cold isolates, which reads as a flaky network rather than a bug.
+
+  Invisible until the apex began actually VERIFYING CACAOs
+  (ADR-2607279500). The window is the cheap lever: an `iat` too far in the
+  FUTURE is still rejected at 300s of skew, and a stale clock errs into the
+  past, so widening `exp` costs nothing on that side."
+  900)
+
 (defn request-cacao
   "Mint ONE request's CACAO (fresh nonce — never reuse across requests or
   retry attempts; the apex records nonces for replay protection) granting
@@ -110,7 +125,7 @@
   bespoke transport) can mint the same auth the built-in q/datoms/pull/
   transact/fold use."
   ([client op-caps graph] (request-cacao client op-caps graph nil))
-  ([client op-caps graph {:keys [ttl-sec] :or {ttl-sec 300}}]
+  ([client op-caps graph {:keys [ttl-sec] :or {ttl-sec default-ttl-sec}}]
    (when-let [secret-key (:secret-key client)]
      (:cacao-b64
       (if (= :legacy (:auth-profile client))
@@ -520,7 +535,7 @@
   ALIAS of `:novelty-size` is added so `aozora.pds.per-actor`'s best-effort
   `novelty_size` read still finds a value either way."
   ([client db-name tx-edn] (transact client db-name tx-edn nil))
-  ([client db-name tx-edn {:keys [ttl-sec retry?] :or {ttl-sec 300}}]
+  ([client db-name tx-edn {:keys [ttl-sec retry?] :or {ttl-sec default-ttl-sec}}]
    (when-not (:secret-key client)
      (throw (js/Error. "transact needs a :secret-key (write) client")))
    (if (= :direct-v1 (:transport client))
@@ -564,7 +579,7 @@
   DIFFERENT implementation, not a rename; no current caller inspects a
   `fold` response field."
   ([client db-name] (fold client db-name nil))
-  ([client db-name {:keys [ttl-sec max-novelty views] :or {ttl-sec 300}}]
+  ([client db-name {:keys [ttl-sec max-novelty views] :or {ttl-sec default-ttl-sec}}]
    (when-not (:secret-key client)
      (throw (js/Error. "fold needs a :secret-key (write) client")))
    (if (= :direct-v1 (:transport client))
