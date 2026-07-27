@@ -367,9 +367,32 @@
 ;; ── reads ────────────────────────────────────────────────────────────────────
 
 (defn q
-  "Datalog query (EDN string) against the operator's `db-name`. Under
-  :transport :direct-v1, the response is reshaped to `.-rows_edn` for a
-  :relation-shaped query only — see `v1-q-response`'s docstring."
+  "Query (EDN string) against the operator's `db-name`.
+
+  THE TWO TRANSPORTS TAKE DIFFERENT LANGUAGES. This is not a wart to
+  route around; it is what each backend implements, and calling one with
+  the other's input FAILS SILENTLY:
+
+    :apex (default)  a triple PATTERN, `[s p o]`, `nil` for a wildcard:
+                     \"[nil \\\":mp.order/doc\\\" nil]\". The pod hands it
+                     straight to `arrangement.query/query`.
+    :direct-v1       real datalog — the string is `read-string`'d and
+                     sent as `{:query .. :args []}`.
+
+  Send a `[:find .. :where ..]` datalog query to the apex and it parses
+  as a six-element vector, matches nothing, and returns `rows: []` —
+  indistinguishable from an empty database. That cost
+  `cloud-itonami-marketplace-*` a day and a whole-graph `datoms` scan on
+  every request, on the strength of this docstring's previous first line
+  (\"Datalog query (EDN string)\"), which was true for one transport and
+  read as true for both.
+
+  Rows come back `{s p o}` from the apex — the same positions as a
+  datom's `{e a v}`. Under :direct-v1 the response is reshaped to
+  `.-rows_edn` for a :relation-shaped query only — see `v1-q-response`.
+
+  Reads are AUTHENTICATED: `:public? true` skips the CACAO mint and the
+  apex answers 401. A key-derived graph is still someone's graph."
   ([client db-name query-edn] (q client db-name query-edn nil))
   ([client db-name query-edn {:keys [limit offset public?]}]
    (if (= :direct-v1 (:transport client))
