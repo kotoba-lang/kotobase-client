@@ -37,8 +37,40 @@
   capability primary, `kotoba://graph/<graph-cid>` scope, no kotobase:pin)
   for endpoints that still verify it — e.g. a pod/tenant-worker lineage that
   pre-dates the apex edge. Same fn signatures either way; the profile only
-  changes the minted CACAO."
+  changes the minted CACAO.
+
+  ── direct transport (`make-client` `:transport :direct-v1`) ────────────────
+  Default `:transport` is `:xrpc` (everything above this paragraph — POSTs
+  `/xrpc/ai.gftd.apps.kotobase.datomic.<method>`, JSON envelope, apex/legacy
+  CACAO). `:direct-v1` instead talks straight to a `kotoba-lang/
+  kotobase-storage-d1` deployment's own native surface (`/v1/transact` /
+  `/v1/q` / `/v1/pull` / `/v1/datoms` / `/v1/fold` / `/v1/view`) — no XRPC
+  edge in the path at all. Same six fn signatures either way; only the wire
+  shape and the RESPONSE SHAPE change:
+
+  * ref addressing: XRPC keys reads/writes by a content-addressed `graph`
+    CID; direct-v1 sends the LITERAL `kotobase/db/<did>/<db-name>` string in
+    an `x-kotobase-ref` header (storage-d1's own `authorize()` derives the
+    tenant purely from the ref prefix + the CACAO issuer, ADR-2607260940).
+  * CACAO capability: storage-d1's own gate checks for the literal resource
+    `kotoba://can/datom:transact` (writes) / `kotoba://can/graph:query`
+    (reads) — DIFFERENT strings from the XRPC vocabulary's `datom:read`/
+    `datom:transact`+`tx:create` — and has no `kotobase:pin` concept and NO
+    anonymous/public-read path (every direct-v1 call needs a `:secret-key`
+    client; `:public-reads?` is XRPC-only).
+  * body/response: raw `application/edn`, not a JSON envelope — direct-v1
+    responses are `kotobase.datomic`'s OWN native shapes, not the XRPC
+    handler's (kotobase-server's `do-transact`/`do-fold`/etc. are a SEPARATE
+    implementation with different field names — e.g. `transact` returns
+    `{:db-before :db-after :tx-data :tempids :novelty-size}`, not XRPC's
+    `{:commit :datom_count :novelty_size}`). `datoms`/`view` happen to share
+    the `{:e :a :v_edn :added}` row shape either transport uses, so those two
+    are wrapped to the SAME `.-datoms`/`.-rows` JS shape callers already
+    read; `transact`/`fold`/`pull`/`q` are NOT byte-compatible with XRPC —
+    read this ns's `v1-*` fn docstrings for their exact native shape before
+    depending on a field."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
+            [cljs.reader :as reader]
             [clojure.string :as str]
             [kotobase.cid :as cid]
             [kotobase.cacao :as cacao]))
@@ -53,8 +85,11 @@
   read-only AppView against a Public graph, :did (the operator DID, used only
   to derive the graph CID) + :public-reads? true. :fetch-fn optional.
   :auth-profile optional — :apex (default; the kotobase.net edge CACAO shape)
-  or :legacy (pre-cutover shape; see ns docstring)."
-  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile]}]
+  or :legacy (pre-cutover shape; see ns docstring).
+  :transport optional — :xrpc (default) or :direct-v1 (a kotobase-storage-d1
+  deployment's own native surface, no XRPC edge; see ns docstring — needs
+  :secret-key, :public-reads? is XRPC-only)."
+  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile transport]}]
   (when (and (nil? secret-key) (nil? did))
     (throw (js/Error. "make-client needs :secret-key or :did")))
   {:endpoint (str/replace endpoint #"/+$" "")
@@ -62,6 +97,7 @@
    :operator-did operator-did
    :public-reads? (boolean public-reads?)
    :auth-profile (or auth-profile :apex)
+   :transport (or transport :xrpc)
    :fetch (or fetch-fn js/fetch)
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
 
@@ -207,6 +243,77 @@
       :read (store-read client (:stream params) (:since params))
       (js/Promise.reject (js/Error. (str "unknown IStore method " method))))))
 
+;; ── direct-v1 transport (kotobase-storage-d1's own native surface) ──────────
+;; See ns docstring's "direct transport" section for the wire-shape contract.
+
+(def ^:private v1-method->path
+  {"transact" "/v1/transact" "q" "/v1/q" "pull" "/v1/pull"
+   "datoms" "/v1/datoms" "fold" "/v1/fold" "view" "/v1/view"})
+
+(defn- v1-ref
+  "The LITERAL ref direct-v1 addresses by (unlike XRPC's content-addressed
+  `graph` CID) — storage-d1's own authorize() derives the tenant from this
+  string's `kotobase/db/<did>/` prefix, matched against the CACAO issuer."
+  [client db-name]
+  (str "kotobase/db/" (:did client) "/" db-name))
+
+(defn- v1-cacao
+  "Mint a CACAO shaped for kotobase-storage-d1's own direct authorize() gate
+  (kotoba-lang/kotobase-storage-d1 `worker.mjs` TX_CAPABILITY/
+  READ_CAPABILITY) — a single literal resource, `kotoba://can/datom:transact`
+  or `kotoba://can/graph:query`, NOT the XRPC vocabulary's `datom:read`/
+  `datom:transact`+`tx:create`, and no `kotobase:pin`. nil when the client
+  has no :secret-key (direct-v1 has no anonymous-read path, so a nil here
+  means the request WILL 401 — unlike XRPC's :public-reads? escape hatch)."
+  [client capability ref ttl-sec]
+  (when-let [secret-key (:secret-key client)]
+    (:cacao-b64
+     (cacao/mint-cacao {:secret-key secret-key :aud (:operator-did client)
+                        :capability capability :graph ref :ttl-sec ttl-sec}))))
+
+(defn- v1-post
+  "POST one method's EDN body straight to a kotobase-storage-d1 deployment.
+  Returns a Promise of the parsed EDN VALUE (whatever `kotobase.datomic`
+  natively returns for that op — see each `v1-*` caller below for the exact
+  shape) — unlike XRPC's `post`, there is no `{:ok ...}` envelope to check:
+  storage-d1's own worker.mjs only ever uses a non-2xx status for failure."
+  [client method edn-body ref cacao-b64]
+  (let [{:keys [endpoint fetch did]} client
+        headers #js {"content-type" "application/edn" "x-kotobase-ref" ref}]
+    (when cacao-b64
+      (aset headers "authorization" (str "CACAO " cacao-b64)))
+    (-> (fetch (str endpoint (get v1-method->path method))
+               #js {:method "POST" :headers headers :body (pr-str edn-body)})
+        (.then (fn [^js res]
+                 (.then (.text res)
+                        (fn [text]
+                          (if-not (.-ok res)
+                            (let [e (js/Error. (str method " " (.-status res) ": " text))]
+                              (set! (.-status e) (.-status res))
+                              (throw e))
+                            (reader/read-string text)))))))))
+
+(defn- v1-write-cacao [client ref ttl-sec] (v1-cacao client "datom:transact" ref ttl-sec))
+(defn- v1-read-cacao [client ref] (when-not (:public-reads? client) (v1-cacao client "graph:query" ref 300)))
+
+(defn- v1-datoms-response
+  "Wrap a raw `kotobase.datomic/datoms` row vector ({:e :a :v_edn :added}
+  maps — the SAME shape XRPC's `do-datoms` uses) into the `.-datoms` JS
+  shape every existing `datoms` caller already reads."
+  [rows]
+  (clj->js {:datoms (vec rows)}))
+
+(defn- v1-q-response
+  "Wrap a raw `kotobase.datomic/q` result into `.-rows_edn` (an array of
+  arrays, `decode-edn-scalar`-compatible per cell) — ONLY correct for a
+  :relation-shaped query (multiple :find vars, the common case and the only
+  shape any current caller sends); a :scalar/:tuple/:collection-shaped
+  query's raw result is NOT a collection-of-tuples and this will misshape
+  it. Callers using a non-relation `:find` spec must inspect the raw value
+  themselves instead of relying on this wrapping."
+  [raw]
+  (clj->js {:rows_edn (mapv (fn [row] (if (sequential? row) (vec row) [row])) raw)}))
+
 ;; A graph with no Datomic/IPNS head yet (never written) reads as empty rather
 ;; than an error — mirrors kotoba.cljc fetchDatoms' 404 handling.
 (defn- empty-on-404 [empty-val p]
@@ -259,60 +366,102 @@
 ;; ── reads ────────────────────────────────────────────────────────────────────
 
 (defn q
-  "Datalog query (EDN string) against the operator's `db-name`."
+  "Datalog query (EDN string) against the operator's `db-name`. Under
+  :transport :direct-v1, the response is reshaped to `.-rows_edn` for a
+  :relation-shaped query only — see `v1-q-response`'s docstring."
   ([client db-name query-edn] (q client db-name query-edn nil))
   ([client db-name query-edn {:keys [limit offset public?]}]
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph :query_edn query-edn}
-                limit (assoc :limit limit)
-                offset (assoc :offset offset))]
-     ;; mint INSIDE the retry thunk — a fresh nonce per attempt (apex replay
-     ;; protection records nonces; reusing one across retries 401s).
-     (empty-on-404 #js {:rows_edn #js []}
-                   (with-retry #(post client "q" body
-                                      (when-not public? (read-cacao client graph))))))))
+   (if (= :direct-v1 (:transport client))
+     (let [ref (v1-ref client db-name)]
+       (empty-on-404 #js {:rows_edn #js []}
+                     (with-retry #(-> (v1-post client "q" {:query (reader/read-string query-edn) :args []}
+                                              ref (v1-read-cacao client ref))
+                                     (.then v1-q-response)))))
+     (let [graph (cid/canonical-graph (:did client) db-name)
+           body (cond-> {:graph graph :query_edn query-edn}
+                  limit (assoc :limit limit)
+                  offset (assoc :offset offset))]
+       ;; mint INSIDE the retry thunk — a fresh nonce per attempt (apex replay
+       ;; protection records nonces; reusing one across retries 401s).
+       (empty-on-404 #js {:rows_edn #js []}
+                     (with-retry #(post client "q" body
+                                        (when-not public? (read-cacao client graph)))))))))
 
 (defn datoms
   "Index scan (`:eavt` / `:aevt` / `:avet` / `:vaet`) over the operator db.
-  `components` is an optional vector of EDN-string prefix components."
+  `components` is an optional vector of EDN-string prefix components.
+  `.-datoms` (row shape `{e a v_edn added}`) is identical across both
+  transports."
   ([client db-name index] (datoms client db-name index nil))
   ([client db-name index {:keys [components limit public?]}]
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph :index index}
-                (seq components) (assoc :components_edn (vec components))
-                limit (assoc :limit limit))]
-     (empty-on-404 #js {:datoms #js []}
-                   (with-retry #(post client "datoms" body
-                                      (when-not public? (read-cacao client graph))))))))
+   (if (= :direct-v1 (:transport client))
+     (let [ref (v1-ref client db-name)
+           ;; `components` are raw prefix VALUES (e.g. an entity-id string),
+           ;; not individually EDN-encoded — matches the XRPC path's own
+           ;; `components_edn` convention (kotobase-server's `do-datoms`
+           ;; consumes it as `(vec components_edn)`, no per-element read-string).
+           options (cond-> {:index (keyword (str/lower-case (str/replace index #"^:" "")))}
+                     (seq components) (assoc :components (vec components))
+                     limit (assoc :limit limit))]
+       (empty-on-404 #js {:datoms #js []}
+                     (with-retry #(-> (v1-post client "datoms" options ref (v1-read-cacao client ref))
+                                     (.then v1-datoms-response)))))
+     (let [graph (cid/canonical-graph (:did client) db-name)
+           body (cond-> {:graph graph :index index}
+                  (seq components) (assoc :components_edn (vec components))
+                  limit (assoc :limit limit))]
+       (empty-on-404 #js {:datoms #js []}
+                     (with-retry #(post client "datoms" body
+                                        (when-not public? (read-cacao client graph)))))))))
 
 (defn view
   "Rows of a fold-materialized view (ADR-2607166600 IVM): one server-side
   block read + fresh novelty merge, so it stays correct between folds.
-  Response mirrors `datoms` (`.-datoms` rows of {e a v_edn added}), plus
-  `.-spec`. The view must have been declared via `fold`'s `:views` opt;
-  an undeclared view rejects with ViewNotFound (post's ok:false path)."
+  Response is `.-spec` + `.-rows` (rows shaped {e a v_edn added}) — IDENTICAL
+  across both transports (XRPC's `do-view` and direct-v1's native `view`
+  both merge kotobase-peer's `view-rows` unchanged; NOT `.-datoms` despite
+  `datoms`' similar row shape — a different top-level field). The view must
+  have been declared via `fold`'s `:views` opt; an undeclared view rejects
+  with ViewNotFound (XRPC: post's ok:false path; direct-v1: non-2xx)."
   ([client db-name view-name] (view client db-name view-name nil))
   ([client db-name view-name {:keys [public?]}]
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         body {:graph graph :view view-name}]
-     ;; NO empty-on-404 (unlike datoms): a 404 head or ViewNotFound must
-     ;; REJECT so consumers with richer fallbacks (attr scans, full reads)
-     ;; actually take them — an empty-success here silently masks "view
-     ;; missing" as "graph empty" (observed live: appview served empty
-     ;; follower lists instead of falling back, ADR-2607167000 addendum).
-     (with-retry #(post client "view" body
-                        (when-not public? (read-cacao client graph)))))))
+   (if (= :direct-v1 (:transport client))
+     (let [ref (v1-ref client db-name)]
+       ;; NO empty-on-404 (see XRPC branch's rationale below).
+       (with-retry #(-> (v1-post client "view" {:view view-name} ref (v1-read-cacao client ref))
+                       (.then clj->js))))
+     (let [graph (cid/canonical-graph (:did client) db-name)
+           body {:graph graph :view view-name}]
+       ;; NO empty-on-404 (unlike datoms): a 404 head or ViewNotFound must
+       ;; REJECT so consumers with richer fallbacks (attr scans, full reads)
+       ;; actually take them — an empty-success here silently masks "view
+       ;; missing" as "graph empty" (observed live: appview served empty
+       ;; follower lists instead of falling back, ADR-2607167000 addendum).
+       (with-retry #(post client "view" body
+                          (when-not public? (read-cacao client graph))))))))
 
 (defn pull
-  "Pull `pattern-edn` for `entity` from the operator db."
+  "Pull `pattern-edn` for `entity` from the operator db. Under :transport
+  :direct-v1 the response is `kotobase.datomic/pull`'s own native pull-result
+  map (clj->js'd directly) — NOT XRPC's `{:attrs ...}` / `{:result_edn ...}`
+  shape (do-pull's two response shapes, chosen by whether pattern_edn was
+  sent); no current aozora-engine caller inspects a `pull` response field, so
+  this has not needed reconciling with either XRPC shape."
   ([client db-name entity pattern-edn] (pull client db-name entity pattern-edn nil))
   ([client db-name entity pattern-edn {:keys [public?]}]
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph :entity entity}
-                pattern-edn (assoc :pattern_edn pattern-edn))]
-     (empty-on-404 #js {}
-                   (with-retry #(post client "pull" body
-                                      (when-not public? (read-cacao client graph))))))))
+   (if (= :direct-v1 (:transport client))
+     (let [ref (v1-ref client db-name)
+           selector (if pattern-edn (reader/read-string pattern-edn) '[*])]
+       (empty-on-404 #js {}
+                     (with-retry #(-> (v1-post client "pull" {:selector selector :eid entity}
+                                              ref (v1-read-cacao client ref))
+                                     (.then clj->js)))))
+     (let [graph (cid/canonical-graph (:did client) db-name)
+           body (cond-> {:graph graph :entity entity}
+                  pattern-edn (assoc :pattern_edn pattern-edn))]
+       (empty-on-404 #js {}
+                     (with-retry #(post client "pull" body
+                                        (when-not public? (read-cacao client graph)))))))))
 
 ;; ── writes ───────────────────────────────────────────────────────────────────
 
@@ -324,17 +473,33 @@
   `:retry?` retries a transient 5xx (the kotoba-wasm db-load flake). Set it ONLY
   when the tx is idempotent — a keyed re-assert (cardinality-one upsert) applied
   twice is a no-op, but an append with a fresh monotonic key (e.g. firehose seq)
-  would duplicate. Default off."
+  would duplicate. Default off.
+
+  Under :transport :direct-v1, the response is `kotobase.datomic/transact`'s
+  own native tx-report — `{:db-before :db-after :tx-data :tempids
+  :novelty-size}` (dash-cased keys: use `(aget resp \"db-after\")`, not
+  `.-db-after`) — NOT XRPC's `do-transact` shape (`{:commit :previous_commit
+  :datom_count :novelty_size}`; a DIFFERENT implementation, not just a
+  rename — do-transact never resolves tempids). A `novelty_size` (snake_case)
+  ALIAS of `:novelty-size` is added so `aozora.pds.per-actor`'s best-effort
+  `novelty_size` read still finds a value either way."
   ([client db-name tx-edn] (transact client db-name tx-edn nil))
   ([client db-name tx-edn {:keys [ttl-sec retry?] :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "transact needs a :secret-key (write) client")))
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         ;; mint inside the thunk — fresh nonce per retry attempt (see q).
-         do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn}
-                        (request-cacao client ["datom:transact" "tx:create"] graph
-                                       {:ttl-sec ttl-sec}))]
-     (if retry? (with-retry do-post) (do-post)))))
+   (if (= :direct-v1 (:transport client))
+     (let [ref (v1-ref client db-name)
+           ;; mint inside the thunk — fresh nonce per retry attempt (see q).
+           do-post #(-> (v1-post client "transact" {:tx-data (reader/read-string tx-edn)}
+                                 ref (v1-write-cacao client ref ttl-sec))
+                       (.then (fn [report] (clj->js (assoc report :novelty_size (:novelty-size report))))))]
+       (if retry? (with-retry do-post) (do-post)))
+     (let [graph (cid/canonical-graph (:did client) db-name)
+           ;; mint inside the thunk — fresh nonce per retry attempt (see q).
+           do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn}
+                          (request-cacao client ["datom:transact" "tx:create"] graph
+                                         {:ttl-sec ttl-sec}))]
+       (if retry? (with-retry do-post) (do-post))))))
 
 (defn fold
   "Maintenance fold: compact `db-name`'s accumulated novelty into a fresh indexed
@@ -356,18 +521,30 @@
   fold (stored specs carry forward when the opt is omitted), served by
   `view`.
   → the worker's `{:ok :graph :folded [:commit :novelty_folded
-  :novelty_remaining]}` response."
+  :novelty_remaining]}` response (XRPC). Under :transport :direct-v1, the
+  response is instead `kotobase.datomic/fold`'s own native shape —
+  `{:committed? :chain-cid-before :chain-cid-after :novelty-before
+  :novelty-after :attempts}` (dash-cased keys, `aget` not `.-`) — a
+  DIFFERENT implementation, not a rename; no current caller inspects a
+  `fold` response field."
   ([client db-name] (fold client db-name nil))
   ([client db-name {:keys [ttl-sec max-novelty views] :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "fold needs a :secret-key (write) client")))
-   (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph}
-                max-novelty (assoc :max_novelty max-novelty)
-                views (assoc :views_edn (pr-str views)))]
-     (post client "fold" body
-           (request-cacao client ["datom:transact" "tx:create"] graph
-                          {:ttl-sec ttl-sec})))))
+   (if (= :direct-v1 (:transport client))
+     (let [ref (v1-ref client db-name)
+           opts (cond-> {}
+                  max-novelty (assoc :max-novelty max-novelty)
+                  views (assoc :views views))]
+       (-> (v1-post client "fold" opts ref (v1-write-cacao client ref ttl-sec))
+           (.then clj->js)))
+     (let [graph (cid/canonical-graph (:did client) db-name)
+           body (cond-> {:graph graph}
+                  max-novelty (assoc :max_novelty max-novelty)
+                  views (assoc :views_edn (pr-str views)))]
+       (post client "fold" body
+             (request-cacao client ["datom:transact" "tx:create"] graph
+                            {:ttl-sec ttl-sec}))))))
 
 ;; ── EDN scalar decode (rows_edn / v_edn cells → cljs values) ─────────────────
 
