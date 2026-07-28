@@ -101,6 +101,31 @@
    :fetch (or fetch-fn js/fetch)
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
 
+(def ^:private db-name-note
+  "Why every XRPC read body now carries `db_name` beside `graph`.
+
+  The apex used to resolve a read from the content-addressed `graph` CID
+  alone. Since ADR-2607279500 it bridges `datomic.*` to
+  kotobase-storage-d1, which addresses refs as the literal string
+  `kotobase/db/<did>/<name>` and cannot invert a CID back into one. A read
+  carrying only the CID therefore answers 404 `UnknownGraphCid` — and this
+  client's own `empty-on-404` then turns that into an EMPTY RESULT, which is
+  indistinguishable from an empty database. That is how every
+  cloud-itonami-marketplace-* actor came back with zero rows against a store
+  that had data.
+
+  Measured against kotobase.net on 2026-07-28, same CACAO, four bodies:
+
+    literal ref, no db_name   200
+    literal ref + db_name     200
+    CID graph, no db_name     404 UnknownGraphCid
+    CID graph + db_name       200
+
+  `transact` already sent `db_name`, which is why writes probed clean while
+  reads did not. Sending both keeps the CID addressing the pod understands
+  and gives the bridge the name it needs — neither side is guessed at."
+  :see-adr-2607279500)
+
 (def default-ttl-sec
   "How long a minted CACAO stays valid. 15 minutes, not 5.
 
@@ -136,12 +161,26 @@
                            :graph graph
                            :ttl-sec ttl-sec})
         ;; :apex — kotobase:pin primary, op caps as extras, ISSUER DID scope.
+        ;;
+        ;; `:sig-encoding :base64`, NOT the base64url default. `v1-cacao`
+        ;; already passed this (kotobase-client #12); the apex path did not,
+        ;; and it did not matter while the apex merely TRUSTED the
+        ;; x-kotoba-did header. Since the edge began verifying and bridging to
+        ;; kotobase-storage-d1, a base64url signature decodes to different
+        ;; bytes, fails Ed25519 verification, and comes back as the same bare
+        ;; 401 as every other cause.
+        ;;
+        ;; Found by diffing the CACAO this client mints against one a JVM
+        ;; client mints from the SAME seed: every payload field identical —
+        ;; header, issuer, audience, domain, timestamps, statement, resources
+        ;; — and `sig ok?` false on this one alone.
         (cacao/mint-cacao {:secret-key secret-key
                            :aud (:operator-did client)
                            :capability "kotobase:pin"
                            :extra-capabilities (vec op-caps)
                            :graph (:did client)
-                           :ttl-sec ttl-sec}))))))
+                           :ttl-sec ttl-sec
+                           :sig-encoding :base64}))))))
 
 (defn- read-cacao
   "A read CACAO for `graph`, or nil when the client reads Public graphs /
@@ -344,8 +383,31 @@
 
 ;; A graph with no Datomic/IPNS head yet (never written) reads as empty rather
 ;; than an error — mirrors kotoba.cljc fetchDatoms' 404 handling.
-(defn- empty-on-404 [empty-val p]
-  (.catch p (fn [^js err] (if (= 404 (.-status err)) empty-val (throw err)))))
+(def ^:private not-empty-404
+  "404 bodies that mean MISCONFIGURED, not empty.
+
+  `UnknownGraphCid` is the apex saying it cannot resolve the ref you named —
+  since the D1 bridge landed, a content-addressed CID with no `db_name` is
+  exactly that. Turning it into an empty result made every
+  cloud-itonami-marketplace-* actor report zero rows against a store that had
+  data, and an empty database is a perfectly ordinary thing for a caller to
+  see, so nothing anywhere raised an eyebrow.
+
+  A store that cannot be read must not look like an empty store."
+  #{"UnknownGraphCid" "UnknownRef" "UnknownDatabase"})
+
+(defn- misconfigured-404? [^js err]
+  (boolean (some #(str/includes? (str (.-message err)) %) not-empty-404)))
+
+(defn- empty-on-404
+  "A 404 means the thing is not there — usually a database with nothing in it
+  yet, which is legitimately empty. But see `not-empty-404`: some 404s mean
+  the ref could not be resolved at all, and those must propagate."
+  [empty-val p]
+  (.catch p (fn [^js err]
+              (if (and (= 404 (.-status err)) (not (misconfigured-404? err)))
+                empty-val
+                (throw err)))))
 
 ;; The kotoba-wasm tenant worker intermittently 500s with "Invalid array buffer
 ;; length" while (re)loading a growing graph's blocks from R2 — a transient
@@ -429,7 +491,7 @@
                                               ref (v1-read-cacao client ref))
                                      (.then v1-q-response)))))
      (let [graph (cid/canonical-graph (:did client) db-name)
-           body (cond-> {:graph graph :query_edn query-edn}
+           body (cond-> {:graph graph :db_name db-name :query_edn query-edn}
                   limit (assoc :limit limit)
                   offset (assoc :offset offset))]
        ;; mint INSIDE the retry thunk — a fresh nonce per attempt (apex replay
@@ -458,7 +520,7 @@
                      (with-retry #(-> (v1-post client "datoms" options ref (v1-read-cacao client ref))
                                      (.then v1-datoms-response)))))
      (let [graph (cid/canonical-graph (:did client) db-name)
-           body (cond-> {:graph graph :index index}
+           body (cond-> {:graph graph :db_name db-name :index index}
                   (seq components) (assoc :components_edn (vec components))
                   limit (assoc :limit limit))]
        (empty-on-404 #js {:datoms #js []}
@@ -508,7 +570,7 @@
                                               ref (v1-read-cacao client ref))
                                      (.then clj->js)))))
      (let [graph (cid/canonical-graph (:did client) db-name)
-           body (cond-> {:graph graph :entity entity}
+           body (cond-> {:graph graph :db_name db-name :entity entity}
                   pattern-edn (assoc :pattern_edn pattern-edn))]
        (empty-on-404 #js {}
                      (with-retry #(post client "pull" body
