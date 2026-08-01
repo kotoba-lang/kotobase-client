@@ -215,6 +215,8 @@
   (let [apex (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did})
         legacy (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
                                 :auth-profile :legacy})
+        strict (kc/make-client {:endpoint endpoint :secret-key seed :operator-did op-did
+                                :auth-profile :strict :tenant-id "tenant-a"})
         dec* (fn [b64] (.decode dag-cbor (cacao/base64->bytes b64)))]
     (is (= ["kotoba://can/kotobase:pin"
             "kotoba://can/datom:transact"
@@ -225,6 +227,12 @@
             "kotoba://can/tx:create"
             (str "kotoba://graph/" graph-cid)]
            (resources-of (dec* (kc/request-cacao legacy ["datom:transact" "tx:create"] graph-cid)))))
+    (is (= ["kotoba://can/datom:transact"
+            "kotoba://can/tx:create"
+            (str "kotoba://graph/" graph-cid)
+            "kotoba://tenant/tenant-a"]
+           (resources-of (dec* (kc/request-cacao strict ["datom:transact" "tx:create"]
+                                                 graph-cid)))))
     (testing "nil without a signing key (unauthenticated caller)"
       (let [ro (kc/make-client {:endpoint endpoint :did did :operator-did op-did
                                 :public-reads? true})]
