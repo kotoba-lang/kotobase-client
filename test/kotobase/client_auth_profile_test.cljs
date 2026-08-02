@@ -135,8 +135,22 @@
           (.then (fn [_]
                    (let [req (first @sink)
                          env (decode-cacao req)]
+                     ;; BOTH read vocabularies, and the second one is not
+                     ;; decoration. The XRPC edge checks `datom:read`; since
+                     ;; ADR-2607279500 it bridges datomic.* to
+                     ;; kotobase-storage-d1, whose gate checks the literal
+                     ;; `graph:query`. A CACAO carrying only the XRPC
+                     ;; vocabulary reaches D1 and is rejected as
+                     ;; `Unauthenticated` -- that is what took every
+                     ;; cloud-itonami-marketplace-* read down on 2026-07-27,
+                     ;; the moment production set KOTOBASE_D1_*.
+                     ;;
+                     ;; So this assertion is a regression guard, not a
+                     ;; snapshot: dropping `graph:query` to make the list
+                     ;; tidier reopens a production outage.
                      (is (= ["kotoba://can/kotobase:pin"
                              "kotoba://can/datom:read"
+                             "kotoba://can/graph:query"
                              (str "kotoba://graph/" did)]
                             (resources-of env)))
                      (is (edge-accepts-capability? env))
@@ -160,7 +174,13 @@
                              "kotoba://can/tx:create"
                              (str "kotoba://graph/" graph-cid)]
                             (resources-of w)))
+                     ;; `:legacy` keeps the pre-cutover CAPABILITY SCOPE (graph
+                     ;; CID, not issuer DID) -- that is what this test pins.
+                     ;; It does not opt out of the dual read vocabulary, which
+                     ;; `read-cacao` applies on every profile because the
+                     ;; bridge that needs it sits below the profile choice.
                      (is (= ["kotoba://can/datom:read"
+                             "kotoba://can/graph:query"
                              (str "kotoba://graph/" graph-cid)]
                             (resources-of r)))
                      (testing "and this is exactly the shape the apex 401s"
