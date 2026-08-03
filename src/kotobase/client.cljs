@@ -88,8 +88,13 @@
   or :legacy (pre-cutover shape; see ns docstring).
   :transport optional — :xrpc (default) or :direct-v1 (a kotobase-storage-d1
   deployment's own native surface, no XRPC edge; see ns docstring — needs
-  :secret-key, :public-reads? is XRPC-only)."
-  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile transport]}]
+  :secret-key, :public-reads? is XRPC-only).
+  :tenant-id optional — when set, every CACAO this client mints carries
+  `kotoba://tenant/<tenant-id>` in its SIGNED resources. `kotobase-server`'s
+  `verify-grant` refuses a grant without it under
+  `:require-tenant-binding? true`; absent, nothing changes."
+  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile
+           transport tenant-id]}]
   (when (and (nil? secret-key) (nil? did))
     (throw (js/Error. "make-client needs :secret-key or :did")))
   {:endpoint (str/replace endpoint #"/+$" "")
@@ -98,6 +103,7 @@
    :public-reads? (boolean public-reads?)
    :auth-profile (or auth-profile :apex)
    :transport (or transport :xrpc)
+   :tenant-id tenant-id
    :fetch (or fetch-fn js/fetch)
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
 
@@ -148,9 +154,13 @@
   `graph`, shaped per the client's :auth-profile (ns docstring). nil when the
   client has no :secret-key. Public so callers with custom methods (or a
   bespoke transport) can mint the same auth the built-in q/datoms/pull/
-  transact/fold use."
+  transact/fold use.
+
+  opts: `:ttl-sec`, and `:purpose` — a human-readable reason recorded in the
+  SIWE `statement` field, which is part of the signed payload. Both profiles
+  carry the client's `:tenant-id` when it has one."
   ([client op-caps graph] (request-cacao client op-caps graph nil))
-  ([client op-caps graph {:keys [ttl-sec] :or {ttl-sec default-ttl-sec}}]
+  ([client op-caps graph {:keys [ttl-sec purpose] :or {ttl-sec default-ttl-sec}}]
    (when-let [secret-key (:secret-key client)]
      (:cacao-b64
       (if (= :legacy (:auth-profile client))
@@ -159,6 +169,8 @@
                            :capability (first op-caps)
                            :extra-capabilities (vec (rest op-caps))
                            :graph graph
+                           :tenant (:tenant-id client)
+                           :statement purpose
                            :ttl-sec ttl-sec})
         ;; :apex — kotobase:pin primary, op caps as extras, ISSUER DID scope.
         ;;
@@ -179,6 +191,8 @@
                            :capability "kotobase:pin"
                            :extra-capabilities (vec op-caps)
                            :graph (:did client)
+                           :tenant (:tenant-id client)
+                           :statement purpose
                            :ttl-sec ttl-sec
                            :sig-encoding :base64}))))))
 

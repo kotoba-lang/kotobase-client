@@ -77,3 +77,51 @@
 
 (deftest cacao-is-deterministic-given-fixed-nonce-and-time
   (is (= (:cacao-b64 (mint)) (:cacao-b64 (mint)))))
+
+;; ── tenant binding (kotobase-server verify-grant :require-tenant-binding?) ──
+
+(deftest tenant-resource-is-signed-when-requested
+  (let [{:keys [cacao-b64]}
+        (cacao/mint-cacao {:secret-key seed :aud aud :capability "datom:read"
+                           :graph graph :tenant "tenant-a" :now-ms 0
+                           :nonce "tenantnonce00001"})
+        ^js env (.decode dag-cbor (cacao/base64->bytes cacao-b64))
+        resources (set (vec (.. env -p -resources)))]
+    (is (contains? resources "kotoba://tenant/tenant-a")
+        "the string kotobase.server.security.authority/verify-grant builds")
+    (is (contains? resources (str "kotoba://graph/" graph))
+        "the graph resource is still there — this is additive")
+    (is (every? #(or (= % (str "kotoba://graph/" graph))
+                     (= % "kotoba://tenant/tenant-a")
+                     (str/starts-with? % "kotoba://can/"))
+                resources)
+        "and every resource still passes verify-grant's allowlist")))
+
+(deftest no-tenant-means-byte-identical-to-before
+  (testing "a verifier that does not require the binding must be unaffected"
+    (let [without (:cacao-b64 (mint))
+          explicit-nil (:cacao-b64
+                        (cacao/mint-cacao
+                         {:secret-key seed :aud aud :capability "datom:transact"
+                          :extra-capabilities ["tx:create"] :graph graph
+                          :tenant nil :statement nil
+                          :now-ms 0 :nonce "testnonce0000000"}))]
+      (is (= without explicit-nil)))))
+
+(deftest purpose-is-signed-as-the-siwe-statement
+  (let [{:keys [cacao-b64]}
+        (cacao/mint-cacao {:secret-key seed :aud aud :capability "datom:read"
+                           :graph graph :statement "nightly fold" :now-ms 0
+                           :nonce "purposenonce0001"})
+        ^js env (.decode dag-cbor (cacao/base64->bytes cacao-b64))
+        ^js p (.-p env)
+        p-clj {:domain (.-domain p) :iss (.-iss p) :aud (.-aud p)
+               :version (.-version p) :nonce (.-nonce p) :iat (.-iat p)
+               :exp (.-exp p) :statement (.-statement p)
+               :resources (vec (.-resources p))}]
+    (is (= "nightly fold" (.-statement p)))
+    (is (true? (.verify ed25519
+                        (cacao/base64url->bytes (.. env -s -s))
+                        (cid/text->bytes (cacao/cacao-siwe-message p-clj))
+                        (.getPublicKey ed25519 seed)))
+        "it is inside the signed payload, not a side field")))

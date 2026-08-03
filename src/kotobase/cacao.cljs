@@ -101,8 +101,19 @@
         which does NOT understand base64url's `-`/`_` alphabet; a
         base64url-encoded signature silently fails ed25519 verification
         there with a generic 401 Unauthenticated, no specific error surfaced
-        to the caller — use :base64 for that verifier)."
-  [{:keys [secret-key aud capability extra-capabilities graph ttl-sec now-ms nonce sig-encoding]
+        to the caller — use :base64 for that verifier),
+        :tenant — when given, `kotoba://tenant/<tenant>` is added to the
+        SIGNED resource list. `kotobase-server`'s
+        `kotobase.server.security.authority/verify-grant` builds exactly that
+        string and, under `:require-tenant-binding? true`, refuses a grant
+        that does not carry it; its resource allowlist admits only the graph
+        resource, the tenant resource and `kotoba://can/*`. Absent, the bytes
+        are unchanged — this is additive, and a verifier that does not require
+        the binding is unaffected either way.
+        :statement — the SIWE statement field, signed. nil (the default) is
+        the previous behaviour."
+  [{:keys [secret-key aud capability extra-capabilities graph tenant statement
+           ttl-sec now-ms nonce sig-encoding]
     :or {ttl-sec 300 extra-capabilities [] sig-encoding :base64url}}]
   (let [pub (.getPublicKey ed25519 secret-key)
         did (cid/did-key-from-ed25519-pub pub)
@@ -110,10 +121,12 @@
         nonce (or nonce (random-nonce))
         iat (utc-seconds now)
         exp (utc-seconds (js/Date. (+ (.getTime now) (* ttl-sec 1000))))
-        resources (conj (mapv #(str "kotoba://can/" %) (cons capability extra-capabilities))
-                        (str "kotoba://graph/" graph))
+        resources (cond-> (conj (mapv #(str "kotoba://can/" %)
+                                      (cons capability extra-capabilities))
+                                (str "kotoba://graph/" graph))
+                    tenant (conj (str "kotoba://tenant/" tenant)))
         p {:domain "kotobase.net" :iss did :aud aud :version "1"
-           :nonce nonce :iat iat :exp exp :statement nil :resources resources}
+           :nonce nonce :iat iat :exp exp :statement statement :resources resources}
         msg (cacao-siwe-message p)
         sig (.sign ed25519 (cid/text->bytes msg) secret-key)
         sig-str (if (= :base64 sig-encoding) (bytes->base64 sig) (bytes->base64url sig))
