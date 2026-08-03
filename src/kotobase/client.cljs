@@ -54,13 +54,15 @@
   to derive the graph CID) + :public-reads? true. :fetch-fn optional.
   :auth-profile optional — :apex (default; the kotobase.net edge CACAO shape)
   or :legacy (pre-cutover shape; see ns docstring)."
-  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile]}]
+  [{:keys [endpoint secret-key operator-did fetch-fn did public-reads?
+           auth-profile tenant-id]}]
   (when (and (nil? secret-key) (nil? did))
     (throw (js/Error. "make-client needs :secret-key or :did")))
   {:endpoint (str/replace endpoint #"/+$" "")
    :secret-key secret-key
    :operator-did operator-did
    :public-reads? (boolean public-reads?)
+   :tenant-id tenant-id
    :auth-profile (or auth-profile :apex)
    :fetch (or fetch-fn js/fetch)
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
@@ -74,16 +76,25 @@
   bespoke transport) can mint the same auth the built-in q/datoms/pull/
   transact/fold use."
   ([client op-caps graph] (request-cacao client op-caps graph nil))
-  ([client op-caps graph {:keys [ttl-sec] :or {ttl-sec 300}}]
+  ([client op-caps graph {:keys [ttl-sec purpose] :or {ttl-sec 300}}]
    (when-let [secret-key (:secret-key client)]
      (:cacao-b64
-      (if (= :legacy (:auth-profile client))
+      (cond
+        (= :strict (:auth-profile client))
+        (cacao/mint-cacao {:secret-key secret-key
+                           :aud (:operator-did client)
+                           :capability (first op-caps)
+                           :extra-capabilities (vec (rest op-caps))
+                           :graph graph :tenant (:tenant-id client)
+                           :statement purpose :ttl-sec ttl-sec})
+        (= :legacy (:auth-profile client))
         (cacao/mint-cacao {:secret-key secret-key
                            :aud (:operator-did client)
                            :capability (first op-caps)
                            :extra-capabilities (vec (rest op-caps))
                            :graph graph
                            :ttl-sec ttl-sec})
+        :else
         ;; :apex — kotobase:pin primary, op caps as extras, ISSUER DID scope.
         (cacao/mint-cacao {:secret-key secret-key
                            :aud (:operator-did client)
@@ -263,7 +274,7 @@
   ([client db-name query-edn] (q client db-name query-edn nil))
   ([client db-name query-edn {:keys [limit offset public?]}]
    (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph :query_edn query-edn}
+         body (cond-> {:graph graph :db_name db-name :query_edn query-edn}
                 limit (assoc :limit limit)
                 offset (assoc :offset offset))]
      ;; mint INSIDE the retry thunk — a fresh nonce per attempt (apex replay
@@ -278,7 +289,7 @@
   ([client db-name index] (datoms client db-name index nil))
   ([client db-name index {:keys [components limit public?]}]
    (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph :index index}
+         body (cond-> {:graph graph :db_name db-name :index index}
                 (seq components) (assoc :components_edn (vec components))
                 limit (assoc :limit limit))]
      (empty-on-404 #js {:datoms #js []}
@@ -294,7 +305,7 @@
   ([client db-name view-name] (view client db-name view-name nil))
   ([client db-name view-name {:keys [public?]}]
    (let [graph (cid/canonical-graph (:did client) db-name)
-         body {:graph graph :view view-name}]
+         body {:graph graph :db_name db-name :view view-name}]
      ;; NO empty-on-404 (unlike datoms): a 404 head or ViewNotFound must
      ;; REJECT so consumers with richer fallbacks (attr scans, full reads)
      ;; actually take them — an empty-success here silently masks "view
@@ -308,7 +319,7 @@
   ([client db-name entity pattern-edn] (pull client db-name entity pattern-edn nil))
   ([client db-name entity pattern-edn {:keys [public?]}]
    (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph :entity entity}
+         body (cond-> {:graph graph :db_name db-name :entity entity}
                 pattern-edn (assoc :pattern_edn pattern-edn))]
      (empty-on-404 #js {}
                    (with-retry #(post client "pull" body
@@ -326,14 +337,18 @@
   twice is a no-op, but an append with a fresh monotonic key (e.g. firehose seq)
   would duplicate. Default off."
   ([client db-name tx-edn] (transact client db-name tx-edn nil))
-  ([client db-name tx-edn {:keys [ttl-sec retry?] :or {ttl-sec 300}}]
+  ([client db-name tx-edn {:keys [ttl-sec retry? idempotency-key purpose]
+                           :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "transact needs a :secret-key (write) client")))
    (let [graph (cid/canonical-graph (:did client) db-name)
+         idempotency-key (or idempotency-key (str (random-uuid)))
          ;; mint inside the thunk — fresh nonce per retry attempt (see q).
-         do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn}
+         do-post #(post client "transact" {:db_name db-name :tx_edn tx-edn
+                                            :idempotency_key idempotency-key
+                                            :purpose purpose}
                         (request-cacao client ["datom:transact" "tx:create"] graph
-                                       {:ttl-sec ttl-sec}))]
+                                       {:ttl-sec ttl-sec :purpose purpose}))]
      (if retry? (with-retry do-post) (do-post)))))
 
 (defn fold
@@ -358,15 +373,19 @@
   → the worker's `{:ok :graph :folded [:commit :novelty_folded
   :novelty_remaining]}` response."
   ([client db-name] (fold client db-name nil))
-  ([client db-name {:keys [ttl-sec max-novelty views] :or {ttl-sec 300}}]
+  ([client db-name {:keys [ttl-sec max-novelty views idempotency-key]
+                    :or {ttl-sec 300}}]
    (when-not (:secret-key client)
      (throw (js/Error. "fold needs a :secret-key (write) client")))
    (let [graph (cid/canonical-graph (:did client) db-name)
-         body (cond-> {:graph graph}
+         body (cond-> {:graph graph
+                       :idempotency_key (or idempotency-key (str (random-uuid)))}
                 max-novelty (assoc :max_novelty max-novelty)
                 views (assoc :views_edn (pr-str views)))]
      (post client "fold" body
-           (request-cacao client ["datom:transact" "tx:create"] graph
+           (request-cacao client (if (= :strict (:auth-profile client))
+                                   ["datom:fold"]
+                                   ["datom:transact" "tx:create"]) graph
                           {:ttl-sec ttl-sec})))))
 
 ;; ── EDN scalar decode (rows_edn / v_edn cells → cljs values) ─────────────────

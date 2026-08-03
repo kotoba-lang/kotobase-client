@@ -94,7 +94,8 @@
         :capability (e.g. \"datom:transact\" / \"datom:read\"),
         :extra-capabilities (e.g. [\"tx:create\"]), :graph (graph CID),
         :ttl-sec (default 300), :now-ms / :nonce (deterministic test overrides)."
-  [{:keys [secret-key aud capability extra-capabilities graph ttl-sec now-ms nonce]
+  [{:keys [secret-key aud capability extra-capabilities graph tenant statement
+           ttl-sec now-ms nonce]
     :or {ttl-sec 300 extra-capabilities []}}]
   (let [pub (.getPublicKey ed25519 secret-key)
         did (cid/did-key-from-ed25519-pub pub)
@@ -102,10 +103,12 @@
         nonce (or nonce (random-nonce))
         iat (utc-seconds now)
         exp (utc-seconds (js/Date. (+ (.getTime now) (* ttl-sec 1000))))
-        resources (conj (mapv #(str "kotoba://can/" %) (cons capability extra-capabilities))
-                        (str "kotoba://graph/" graph))
+        resources (cond-> (conj (mapv #(str "kotoba://can/" %)
+                                      (cons capability extra-capabilities))
+                                (str "kotoba://graph/" graph))
+                    tenant (conj (str "kotoba://tenant/" tenant)))
         p {:domain "kotobase.net" :iss did :aud aud :version "1"
-           :nonce nonce :iat iat :exp exp :statement nil :resources resources}
+           :nonce nonce :iat iat :exp exp :statement statement :resources resources}
         msg (cacao-siwe-message p)
         sig (.sign ed25519 (cid/text->bytes msg) secret-key)
         cacao #js {:h #js {:t "caip122"}
