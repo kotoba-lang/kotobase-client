@@ -1,7 +1,11 @@
 ;; Standalone test build for the canonical kotobase-client library.
 ;; Consumers (aozora PDS/AppView/SPA, kami-genko) add "src" to their own
 ;; :source-paths instead of depending on this build.
-{:source-paths ["src" "test"]
+{;; kotoba-lang/datom-source is the IPatternSource contract + its
+ ;; conformance suite (kotobase.datom-source implements it). Consumed as a
+ ;; source-path, same way consumers consume this library — it has zero
+ ;; dependencies of its own, so nothing else comes with it.
+ :source-paths ["src" "test" "../datom-source/src" "../datom-source/test"]
  :dependencies []
  :builds
  {:test {:target :node-test

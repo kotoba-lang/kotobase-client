@@ -11,6 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/datom-source
+          # The IPatternSource contract + conformance suite that
+          # kotobase.datom-source implements. Consumed as a source-path
+          # (zero deps of its own); ../datom-source is where shadow-cljs.edn
+          # expects it, so it must be a SIBLING of this checkout.
+          ref: b42f6e6ff942c7f8a2856f8142ebffc13aa11098
+          path: ../datom-source
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
