@@ -4,8 +4,10 @@
 {;; kotoba-lang/datom-source is the IPatternSource contract + its
  ;; conformance suite (kotobase.datom-source implements it). Consumed as a
  ;; source-path, same way consumers consume this library — it has zero
- ;; dependencies of its own, so nothing else comes with it.
- :source-paths ["src" "test" "../datom-source/src" "../datom-source/test"]
+ ;; dependencies of its own, so nothing else comes with it. `.deps/<name>`,
+ ;; not `../<name>`: actions/checkout refuses a path outside the workspace,
+ ;; and the sibling-path form failed CI for exactly that reason.
+ :source-paths ["src" "test" ".deps/datom-source/src" ".deps/datom-source/test"]
  :dependencies []
  :builds
  {:test {:target :node-test
