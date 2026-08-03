@@ -67,40 +67,24 @@
 
   Retractions are dropped: only `added` rows are returned, so a scan answers
   what is currently asserted."
-  (:require [clojure.set :as set]
-            [datom.source :as src]
-            [kotobase.client :as kc]))
+  (:require [datom.source :as src]
+            [kotobase.client :as kc]
+            [kotobase.datom-plan :as plan]))
 
-;; --------------------------------------------------------------- pattern plan
 
-(defn plan
-  "`[s p o]` → `{:index \"...\" :components [...] :post-filter [s p o]}`.
+(def plan
+  "See `kotobase.datom-plan/plan`. Re-exported so a caller reasoning
+  about this source's reads does not have to know the plan was extracted to a
+  portable namespace for `kotobase-server`'s in-process use."
+  plan/plan)
 
-  `:post-filter` names the positions the index could not bind, which the
-  caller must still check. It is returned rather than applied so a caller can
-  see what the pushdown did and did not cover."
-  [[s p o]]
-  (cond
-    (and s p) {:index "eavt" :components [s p] :post-filter [nil nil o]}
-    s {:index "eavt" :components [s] :post-filter [nil p o]}
-    (and p o) {:index "avet" :components [p o] :post-filter [nil nil nil]}
-    p {:index "aevt" :components [p] :post-filter [nil nil o]}
-    ;; object-only and fully-unbound both scan; only the filter differs.
-    :else {:index "eavt" :components [] :post-filter [nil nil o]}))
-
-;; ------------------------------------------------------------------ decoding
-
-(defn- row->quad [^js row]
-  {:s (.-e row) :p (.-a row) :o (.-v_edn row) :added (.-added row)})
+(defn- row->quad-fields [^js row]
+  {:e (.-e row) :a (.-a row) :v_edn (.-v_edn row) :added (.-added row)})
 
 (defn rows->quads
-  "`.-datoms` rows → asserted quads. Retractions are dropped."
+  "`.-datoms` rows -> asserted quads. Retractions are dropped."
   [rows]
-  (into #{}
-        (comp (map row->quad)
-              (filter :added)
-              (map #(dissoc % :added)))
-        (array-seq (or rows #js []))))
+  (plan/rows->quads row->quad-fields (array-seq (or rows #js []))))
 
 ;; -------------------------------------------------------------------- prefetch
 
@@ -116,15 +100,14 @@
   what this namespace has to get right is the PLAN, and that is what the
   conformance test exercises."
   [datoms-fn patterns]
-  (let [plans (distinct (map (fn [p] (select-keys (plan p) [:index :components]))
-                             patterns))]
+  (let [plans (plan/reads patterns)]
     (-> (js/Promise.all
          (clj->js (map (fn [{:keys [index components]}]
                          (-> (js/Promise.resolve (datoms-fn index components))
                              (.then rows->quads)))
                        plans)))
         (.then (fn [results]
-                 (src/of-quads (reduce set/union #{} (array-seq results))))))))
+                 (src/of-quads (plan/union-quads (array-seq results))))))))
 
 (defn from-client
   "`prefetch` wired to `kotobase.client/datoms` for `db-name`.
