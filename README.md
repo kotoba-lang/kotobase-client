@@ -22,7 +22,8 @@ kotobase.net tenant plane this repo is specific to).
 - `kotobase.cacao` — SIWE/EIP-4361 message + Ed25519 did:key CACAO, DAG-CBOR
   encoded. The SAME source the cljs PDS verifies with, so client and server
   can't drift.
-- `kotobase.cid` — did:key ⇄ Ed25519 pubkey, base58btc/base32, and
+- `kotobase.cid` — did:key ⇄ Ed25519 pubkey, base58btc/base32/base36,
+  `ipns-name->ed25519-pub` / `ipns-name-matches-pub?`, and
   `canonical-graph` (operator's `kotobase/db/<did>/<db-name>` CID).
 - `kotobase.ipns` — sign/verify a signed IPNS head record
   (ADR-2607061800), the `:cljs` counterpart to `kotoba-lang/tech-ipfs-
@@ -30,6 +31,23 @@ kotobase.net tenant plane this repo is specific to).
   JVM side for the same seed+record (canonical dag-cbor payload +
   deterministic Ed25519 signature) against a real JVM-signed fixture,
   not just cljs self-consistency.
+
+  **`verify-head` resolves the authoritative key from the name.** A `k51…`
+  name IS `pubkey->name` of its Ed25519 key, so a record's own
+  `:public_key_multibase` is only ever a restatement of it. Until
+  2026-08-04 this checked the signature and not that binding, so any
+  keypair could sign a record carrying somebody else's name and have it
+  verify — and `kotobase-server`'s publish endpoint, whose only other gate
+  is sequence monotonicity, accepted it. `ipns_test/name-takeover-is-
+  refused` reproduces that against the unpatched code. See superproject
+  **ADR-2608047000**.
+
+  `kotobase.cid`'s base36/IPNS-name decode is a deliberate second
+  implementation of `ipns.core`'s portable `.cljc` one: this library is
+  consumed as a bare shadow-cljs `:source-path`, so a `deps.edn` git dep
+  here would not resolve in consumer builds. The golden vectors in
+  `cid_test` — including `ipns.core-test`'s own real-Kubo-node vector —
+  are what keeps the two copies from drifting.
 
 Runs in the browser SPA and the cljs Cloudflare Workers (workerd/node) — global
 `fetch` + Web Crypto in both.

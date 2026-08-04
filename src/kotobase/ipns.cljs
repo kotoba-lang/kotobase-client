@@ -39,12 +39,27 @@
    `ipns.head/sign` -- produces). Returns `{:valid? bool :name ...}` --
    recomputes the canonical dag-cbor payload over every field except the
    two signature fields, and checks `:signature_multibase` against the
-   `did:key` in `:public_key_multibase`. Sequence-rollback (CAS) is NOT
-   this function's job -- that is the storage layer's optimistic-
-   concurrency write."
+   `did:key` in `:public_key_multibase`, AND that that key is the one
+   `:name` names. Sequence-rollback (CAS) is NOT this function's job --
+   that is the storage layer's optimistic-concurrency write.
+
+   **The signature alone is not authority over the name.** Until 2026-08-04
+   this function (and its JVM twin `ipns.head/verify`) checked only the
+   signature, so any keypair could sign a record carrying somebody else's
+   `k51...` and have it verify -- and `kotobase.server.ipns/verify-and-
+   decide-publish`, whose only other gate is sequence monotonicity, accepted
+   it. A `k51...` name IS `pubkey->name` of its Ed25519 key, so the
+   authoritative key is resolved FROM THE NAME and
+   `:public_key_multibase` is only ever a restatement of it. See
+   `kotobase.cid/ipns-name-matches-pub?` and superproject ADR-2608047000."
   [record]
   (let [{:keys [public_key_multibase signature_multibase]} record
         pub (and public_key_multibase (cid/did-key->ed25519-pub public_key_multibase))
         sig (and signature_multibase (cid/base58btc-decode (subs signature_multibase 1)))]
-    {:valid? (boolean (and pub sig (.verify ed25519 sig (payload-bytes record) pub)))
+    {:valid? (boolean (and pub sig
+                           ;; the name IS the key -- checked before the
+                           ;; signature, so a forged name can never reach a
+                           ;; verify that would say yes
+                           (cid/ipns-name-matches-pub? (:name record) pub)
+                           (.verify ed25519 sig (payload-bytes record) pub)))
      :name (:name record)}))
