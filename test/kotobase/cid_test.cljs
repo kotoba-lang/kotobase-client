@@ -72,3 +72,54 @@
         c (cid/canonical-graph "did:key:zABC" "places")]
     (is (= a b) "same name → same CID")
     (is (not= a c) "different db-name → different CID")))
+
+;; ── IPNS name → pubkey ─────────────────────────────────────────────────────
+;;
+;; `ipns-name->ed25519-pub` is a deliberate SECOND implementation of
+;; `kotoba-lang/tech-ipfs-specs-ipns`'s portable `ipns.core/name->pubkey`
+;; (this repo is consumed as a bare shadow-cljs :source-path, so a git dep
+;; would not resolve in consumer builds -- see that fn's docstring). Two
+;; copies of a codec drift; these are the mitigation. Every literal below is
+;; copied from `ipns.core-test`, so a divergence in either repo fails here.
+
+(defn- ->u8 [ints] (js/Uint8Array.from (clj->js ints)))
+
+(deftest ipns-name-decode-golden-vectors
+  (testing "byte-identical to the JVM ipns.core/name->pubkey for its own vectors"
+    (is (= (vec (range 32))
+           (vec (array-seq (cid/ipns-name->ed25519-pub
+                            "k51qzi5uqu5dg6lcd99r9gmb963kgugjinxxggwy7o93oagk3f2eg3qcjh7127")))))
+    (is (= (vec (repeat 32 0))
+           (vec (array-seq (cid/ipns-name->ed25519-pub
+                            "k51qzi5uqu5dg6l7sg2ssb5uefnq8g7g1d6n6j2zsio0o0k7snyb11p8myhxxc")))))
+    (is (= (vec (repeat 32 0xff))
+           (vec (array-seq (cid/ipns-name->ed25519-pub
+                            "k51qzi5uqu5dmkadisduutrwhobhcd351viuwscvsltkaymqovgho5slq61rlr"))))))
+  (testing "and to a name a real go-ipfs/Kubo node produced (ipns.core-test's own)"
+    (is (= [0x92 0x2e 0x4d 0x13 0xf9 0x69 0xb0 0xcc 0x8d 0xe7 0x7c 0x13
+            0xe8 0x95 0x82 0x80 0x27 0xc4 0xd7 0x79 0x73 0x7a 0xca 0xe7
+            0x4e 0x5f 0x36 0x16 0x4e 0xc4 0x79 0xed]
+           (vec (array-seq (cid/ipns-name->ed25519-pub
+                            "k51qzi5uqu5djtr2a6bj7pjlv4gdl8zvv8eov1rhknh0vn9uj7ojrozknot04t")))))))
+
+(deftest ipns-name-decode-fails-closed
+  (testing "nil, never a throw, for everything malformed"
+    (doseq [bad [nil "" "not-a-k-name" "k" "k51" "kzzz!!!"
+                 ;; right prefix, wrong multibase body
+                 "k000000000000000000000000000000000000000000000000000000000000"]]
+      (is (nil? (cid/ipns-name->ed25519-pub bad)) (str "for " (pr-str bad))))))
+
+(deftest ipns-name-matches-pub
+  (let [name "k51qzi5uqu5dg6lcd99r9gmb963kgugjinxxggwy7o93oagk3f2eg3qcjh7127"
+        pub  (->u8 (range 32))
+        other (->u8 (reverse (range 32)))]
+    (testing "the key a name names matches that name"
+      (is (true? (cid/ipns-name-matches-pub? name pub))))
+    (testing "any other key does not, however well-formed"
+      (is (false? (cid/ipns-name-matches-pub? name other))))
+    (testing "fails closed on malformed input rather than throwing"
+      (is (false? (cid/ipns-name-matches-pub? name nil)))
+      (is (false? (cid/ipns-name-matches-pub? nil pub)))
+      (is (false? (cid/ipns-name-matches-pub? "not-a-k-name" pub)))
+      (is (false? (cid/ipns-name-matches-pub? name (->u8 (range 31)))))
+      (is (false? (cid/ipns-name-matches-pub? name (->u8 (range 33))))))))

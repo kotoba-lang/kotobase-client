@@ -32,13 +32,42 @@
   (is (= false (:valid? (ipns/verify-head (assoc jvm-signed-fixture :sequence 2))))))
 
 (deftest sign-head-and-verify-head-roundtrip
-  (let [record {:name "k51qzi5uqu5d-placeholder" :value "bafyrei-other" :sequence 7
+  ;; `:name` was "k51qzi5uqu5d-placeholder" until 2026-08-04 -- a string that
+  ;; names no key at all, which passed because verify-head did not look. Now
+  ;; the name has to be the one `seed`'s pubkey derives, which is exactly the
+  ;; fixture's.
+  (let [record {:name (:name jvm-signed-fixture) :value "bafyrei-other" :sequence 7
                 :valid_until "2028-01-01T00:00:00Z"}
         signed (ipns/sign-head seed record)]
     (testing "round-trips through sign then verify"
       (is (= {:valid? true :name (:name record)} (ipns/verify-head signed))))
     (testing "tampering with a signed field invalidates it"
       (is (= false (:valid? (ipns/verify-head (assoc signed :sequence 8))))))))
+
+(deftest name-takeover-is-refused
+  ;; The attack this suite did not cover. Every signature here is genuine --
+  ;; the attacker signs their own record perfectly well. What they do not hold
+  ;; is the key the victim's name names. See superproject ADR-2608047000 and
+  ;; the JVM twin, ipns.head-test/name-takeover-is-refused.
+  (let [attacker-seed (js/Uint8Array.from (clj->js (range 1 33)))
+        victim-name   (:name jvm-signed-fixture)]
+    (testing "an attacker signing a record that claims the victim's name is refused"
+      (let [forged (ipns/sign-head attacker-seed
+                                   {:name victim-name
+                                    :value "bafyreiattackercontrolled"
+                                    :sequence 9999
+                                    :valid_until "2027-01-01T00:00:00Z"})]
+        (is (= false (:valid? (ipns/verify-head forged)))
+            "a valid signature by a key the name does not name is not authority")))
+    (testing "a record naming no key at all is refused rather than treated as unnamed"
+      (let [signed (ipns/sign-head attacker-seed
+                                   {:name "k51qzi5uqu5d-placeholder" :value "x"
+                                    :sequence 1})]
+        (is (= false (:valid? (ipns/verify-head signed))))))
+    (testing "rewriting :name on an otherwise valid record is refused"
+      (is (= false (:valid? (ipns/verify-head
+                             (assoc jvm-signed-fixture :name
+                                    "k51qzi5uqu5dg6lcd99r9gmb963kgugjinxxggwy7o93oagk3f2eg3qcjh7127"))))))))
 
 (deftest sign-head-matches-the-jvm-side-for-the-same-inputs
   (let [record {:name (:name jvm-signed-fixture) :value (:value jvm-signed-fixture)

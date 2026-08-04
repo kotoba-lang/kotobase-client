@@ -20,6 +20,9 @@
 (def ^:private b32-alphabet
   "abcdefghijklmnopqrstuvwxyz234567")
 
+(def ^:private b36-alphabet
+  "0123456789abcdefghijklmnopqrstuvwxyz")
+
 (defn ^js text->bytes [^string s]
   (.encode (js/TextEncoder.) s))
 
@@ -86,6 +89,79 @@
           out (js/Uint8Array. (+ zeros n))]
       (dotimes [j n] (aset out (+ zeros j) (aget b256 (- n 1 j))))  ; b256 is little-endian
       out)))
+
+(defn base36-decode
+  "Inverse of the multibase base36 `ipns.core/base36` uses: lowercase base36
+  string → Uint8Array. Throws on bad chars.
+
+  A deliberate second implementation of `kotoba-lang/tech-ipfs-specs-ipns`'s
+  portable `.cljc` codec, not a shared dependency — this repo is consumed by
+  its workers as a bare shadow-cljs `:source-path` (see the aozora workers'
+  `shadow-cljs.edn`), so a `deps.edn` git dep here would not resolve in their
+  builds and a new `(:require [ipns.core])` would break them. Same reason and
+  same shape as this namespace's existing did:key/base58 duplication of the
+  JVM stack (ADR-2607050100): byte compatibility is the contract, held by
+  golden vectors in `cid_test`, not by sharing code.
+
+  Two copies of a codec is a drift risk and the vectors are the mitigation:
+  they are the literals `ipns.core-test` asserts, including the one taken from
+  a real Kubo node."
+  [^string s]
+  (let [idx (into {} (map-indexed (fn [i c] [c i]) b36-alphabet))
+        zeros (count (take-while #(= % \0) s))
+        b256 (array)]
+    (doseq [c (drop zeros s)]
+      (let [carry (volatile! (or (get idx c)
+                                 (throw (js/Error. (str "base36: bad char " c)))))]
+        (dotimes [j (alength b256)]
+          (let [x (+ (* (aget b256 j) 36) @carry)]
+            (aset b256 j (bit-and x 0xff))
+            (vreset! carry (bit-shift-right x 8))))
+        (while (pos? @carry)
+          (.push b256 (bit-and @carry 0xff))
+          (vreset! carry (bit-shift-right @carry 8)))))
+    (let [n (alength b256)
+          out (js/Uint8Array. (+ zeros n))]
+      (dotimes [j n] (aset out (+ zeros j) (aget b256 (- n 1 j))))  ; b256 is little-endian
+      out)))
+
+(defn ipns-name->ed25519-pub
+  "`k51…` libp2p-key IPNS name → the 32-byte Ed25519 public key it names, or
+  nil. The cljs counterpart of `ipns.core/name->pubkey*`.
+
+  Structurally exact, not merely prefix-shaped: CIDv1 (0x01) + libp2p-key
+  codec (0x72) + identity multihash (0x00) + a libp2p PublicKey protobuf of
+  EXACTLY 36 bytes with header `08 01 12 20`. A length check that only
+  enforced a floor would fold trailing garbage into the returned key, which
+  is a forged name that verifies.
+
+  Fail-closed: nil for anything malformed, never a throw."
+  [^string name]
+  (try
+    (when (and (string? name) (str/starts-with? name "k"))
+      (let [cid (base36-decode (subs name 1))]
+        (when (and (>= (alength cid) 4)
+                   (= 0x01 (aget cid 0)) (= 0x72 (aget cid 1))
+                   (= 0x00 (aget cid 2)))
+          (let [len (aget cid 3)
+                pb (.subarray cid 4 (+ 4 len))]
+            (when (and (= 36 len) (= 36 (alength pb))
+                       (= 0x08 (aget pb 0)) (= 0x01 (aget pb 1))
+                       (= 0x12 (aget pb 2)) (= 0x20 (aget pb 3)))
+              (.slice pb 4 36))))))
+    (catch js/Error _ nil)))
+
+(defn ipns-name-matches-pub?
+  "Does `name` name exactly `pub`? The cljs counterpart of
+  `ipns.core/name-matches-pubkey?`, and the check that makes \"the name is the
+  key\" true rather than decorative — see that function's docstring and
+  `kotobase.ipns/verify-head`. Fail-closed."
+  [^string name ^js pub]
+  (boolean
+   (when-let [expected (ipns-name->ed25519-pub name)]
+     (and pub
+          (= (alength expected) (alength pub))
+          (every? true? (map = (array-seq expected) (array-seq pub)))))))
 
 (defn did-key->ed25519-pub
   "did:key:z<base58btc(0xed 0x01 || pub32)> → the 32-byte Ed25519 public key,
