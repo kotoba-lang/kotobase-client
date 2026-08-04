@@ -34,7 +34,10 @@
     (->> quads
          (filter (fn [q] (every? true?
                                  (map (fn [k c] (= (get q k) c)) ks components))))
-         (map (fn [q] #js {:e (:s q) :a (:p q) :v_edn (:o q) :added true})))))
+         ;; `pr-str`: a real row reports v_edn, the ENCODING of the stored
+         ;; value. A fake that reported the value itself would let a missing
+         ;; decode pass.
+         (map (fn [q] #js {:e (:s q) :a (:p q) :v_edn (pr-str (:o q)) :added true})))))
 
 (defn- fake-datoms-fn [quads calls]
   (fn [index components]
@@ -105,11 +108,12 @@
 
 ;; ── row decoding ────────────────────────────────────────────────────────────
 
-(deftest retractions-are-dropped-and-values-stay-wire-strings
-  (let [rows #js [#js {:e "alice" :a "age" :v_edn "30" :added true}
-                  #js {:e "alice" :a "age" :v_edn "29" :added false}]]
+(deftest retractions-are-dropped-and-the-object-is-decoded
+  (let [rows #js [#js {:e "alice" :a "age" :v_edn "\"30\"" :added true}
+                  #js {:e "alice" :a "age" :v_edn "\"29\"" :added false}]]
     (is (= #{{:s "alice" :p "age" :o "30"}} (ds/rows->quads rows))
-        "a scan answers what is currently asserted")))
+        "a scan answers what is currently asserted, as STORED values — the
+         row's v_edn is their encoding, and a consumer cannot filter on that")))
 
 (deftest no-rows-is-an-empty-source-not-a-failure
   (is (= #{} (ds/rows->quads nil)))

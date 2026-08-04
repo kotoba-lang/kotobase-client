@@ -23,6 +23,15 @@
   traversal) binds to the index and keeps its own semantics; it does not get
   translated into `:find`/`:where` first (superproject ADR-2608039970).
 
+  ## Quads carry stored VALUES, not `v_edn`
+
+  A row reports the object as its EDN encoding; this decodes one level, so
+  `:o` is the value the write path stored. Pattern components are in the
+  same representation — a caller holding a logical value passes `(str v)`,
+  not `(pr-str v)`. Measured against the datom plane
+  (`kotobase-server#29`): `:avet` components filter on the STORED value and
+  match nothing against the encoded one.
+
   ## Async construction, synchronous scanning
 
   `IPatternSource/-scan` is synchronous by contract, and `kotoba-lang/sparql`'s
@@ -67,7 +76,8 @@
 
   Retractions are dropped: only `added` rows are returned, so a scan answers
   what is currently asserted."
-  (:require [datom.source :as src]
+  (:require [cljs.reader :as reader]
+            [datom.source :as src]
             [kotobase.client :as kc]
             [kotobase.datom-plan :as plan]))
 
@@ -82,9 +92,22 @@
   {:e (.-e row) :a (.-a row) :v_edn (.-v_edn row) :added (.-added row)})
 
 (defn rows->quads
-  "`.-datoms` rows -> asserted quads. Retractions are dropped."
+  "`.-datoms` rows -> asserted quads. Retractions are dropped.
+
+  The object is DECODED one level: a row reports `v_edn` — the EDN encoding
+  of the stored value — and a quad carries the value itself. `30` stored as
+  the string \"30\" arrives as the four characters `\"30\"` and comes back out
+  as `30`'s stored form, `\"30\"`.
+
+  That is the representation a consumer can work in: a filter comparing
+  `?v > 25` can parse `\"30\"` and can do nothing with its encoding. It also
+  matches `kotobase.server.pattern-source`, the in-process implementation of
+  this same seam — the two would otherwise hand the same query different
+  values depending on which transport answered it."
   [rows]
-  (plan/rows->quads row->quad-fields (array-seq (or rows #js []))))
+  (into #{}
+        (map (fn [q] (update q :o #(when (string? %) (reader/read-string %)))))
+        (plan/rows->quads row->quad-fields (array-seq (or rows #js [])))))
 
 ;; -------------------------------------------------------------------- prefetch
 
