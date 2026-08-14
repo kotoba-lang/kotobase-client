@@ -78,6 +78,23 @@
 (def ^:private datomic-ns "ai.gftd.apps.kotobase.datomic")
 (def ^:private store-ns "net.kotobase.store")
 
+(def ^:private user-agent
+  "**すべての外向きリクエストに名乗らせる。**
+
+  Cloudflare Workers の `fetch` は User-Agent を既定で付けない。その結果
+  kotobase の edge には UA 空のまま届き、実測 2026-08-14、aozora PDS の
+  datoms が上流で 429 になった:
+
+    datoms 429: {\"error\":\"Too Many Requests\",
+                 \"details\":\"empty User-Agent datoms traffic is rate limited\"}
+
+  PDS は describeRepo 1 回につき 12 本前後の keyed read を投げるので、
+  名乗らないクライアントとしては真っ先に絞られる側だった。**429 の理由は
+  応答本文に書かれていて、status だけ見ていると分からない。**
+
+  ここで直すのは名乗りであって呼び出し回数ではない —— 増幅そのものは別件。"
+  "kotobase-client/1 (+https://github.com/kotoba-lang/kotobase-client)")
+
 (defn make-client
   "opts: :endpoint (e.g. \"https://kotobase.net\"), :operator-did (CACAO
   audience, e.g. \"did:web:kotobase.net\"), and an identity — either
@@ -230,7 +247,8 @@
   covers every caller of transact/datoms/q/pull uniformly."
   [client method body cacao-b64]
   (let [{:keys [endpoint fetch did]} client
-        headers #js {"content-type" "application/json"}
+        headers #js {"content-type" "application/json"
+                     "user-agent" user-agent}
         full-body (cond-> body cacao-b64 (assoc :cacao_b64 cacao-b64))]
     (when cacao-b64
       (aset headers "authorization" (str "CACAO " cacao-b64))
@@ -270,6 +288,7 @@
         caps (if write? ["datom:transact" "tx:create"] ["datom:read" "graph:query"])
         cacao-b64 (request-cacao client caps did)
         headers #js {"content-type" "application/json"
+                     "user-agent" user-agent
                      "authorization" (str "CACAO " cacao-b64)
                      "x-kotoba-did" did}]
     (-> (fetch (str endpoint "/xrpc/" store-ns "." (name method))
@@ -360,7 +379,8 @@
   storage-d1's own worker.mjs only ever uses a non-2xx status for failure."
   [client method edn-body ref cacao-b64]
   (let [{:keys [endpoint fetch did]} client
-        headers #js {"content-type" "application/edn" "x-kotobase-ref" ref}]
+        headers #js {"content-type" "application/edn" "x-kotobase-ref" ref
+                     "user-agent" user-agent}]
     (when cacao-b64
       (aset headers "authorization" (str "CACAO " cacao-b64)))
     (-> (fetch (str endpoint (get v1-method->path method))
