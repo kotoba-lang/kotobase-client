@@ -208,6 +208,21 @@
           (.then (fn [^js resp] (is (= 0 (.-length (.-datoms resp)))) (done)))
           (.catch (fn [e] (is false (str "ok:true must resolve: " e)) (done)))))))
 
+(deftest public-datoms-selects-only-the-exact-graph
+  (async done
+    (let [sink (atom nil)
+          c (kc/make-client {:endpoint endpoint :did op-did :operator-did op-did
+                             :public-reads? true :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/datoms c "relay-bsky" ":eavt")
+          (.then (fn [_]
+                   (let [b (body-of sink)]
+                     (is (= (cid/canonical-graph op-did "relay-bsky") (:graph b)))
+                     (is (nil? (:db_name b))
+                         "anonymous reads cannot name a tenant database")
+                     (is (nil? (header-of sink "authorization")))
+                     (done))))
+          (.catch (fn [e] (is false (str "public datoms rejected: " e)) (done)))))))
+
 ;; ── fold (D1 maintenance op, ADR-2607032430) ──────────────────────────────────
 ;; No prior coverage at all — transact/q/pull/datoms are covered above, fold
 ;; never was.
