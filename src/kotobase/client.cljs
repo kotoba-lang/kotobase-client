@@ -125,7 +125,7 @@
    :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
 
 (def ^:private db-name-note
-  "Why every XRPC read body now carries `db_name` beside `graph`.
+  "Why authenticated XRPC read bodies carry `db_name` beside `graph`.
 
   The apex used to resolve a read from the content-addressed `graph` CID
   alone. Since ADR-2607279500 it bridges `datomic.*` to
@@ -554,7 +554,13 @@
                      (with-retry #(-> (v1-post client "datoms" options ref (v1-read-cacao client ref))
                                      (.then v1-datoms-response)))))
      (let [graph (cid/canonical-graph (:did client) db-name)
-           body (cond-> {:graph graph :db_name db-name :index index}
+           ;; Public browser reads are intentionally selected by exact graph
+           ;; CID only.  Sending db_name would ask the edge to resolve a
+           ;; tenant-owned name without a verified caller and is therefore
+           ;; rejected.  Authenticated clients retain db_name for the D1
+           ;; bridge, whose storage ref cannot be recovered from a CID.
+           body (cond-> {:graph graph :index index}
+                  (not (:public-reads? client)) (assoc :db_name db-name)
                   (seq components) (assoc :components_edn (vec components))
                   limit (assoc :limit limit))]
        (empty-on-404 #js {:datoms #js []}
