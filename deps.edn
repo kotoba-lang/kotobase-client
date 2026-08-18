@@ -6,7 +6,19 @@
  ;; repo's package.json for the standalone test build).
  :deps {}
  :aliases
- {;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
+ {;; **Test-scoped, and that placement is the point.** This repo is consumed as
+  ;; a shadow-cljs `:source-path`, so a consumer supplies `datom.source` at
+  ;; build time and never reads this alias -- putting it in `:deps` would
+  ;; change what every consumer resolves, which is a decision with blast
+  ;; radius. Here it changes nothing for them and lets the suite run ALONE.
+  ;;
+  ;; Without it there was no way to run these tests outside a consumer:
+  ;; measured 2026-08-18, `Could not find namespace: datom.source` before any
+  ;; assertion, which is why this repo had no fleet gate of any kind.
+  :test {:extra-paths ["test"]
+         :extra-deps {io.github.kotoba-lang/datom-source
+                      {:git/sha "d3f021095f6df3a11bf8135471a1a8ec865f7ee3"}}}
+  ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
          :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
                      "--fail-level" "error"]}}}
