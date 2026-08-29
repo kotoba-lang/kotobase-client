@@ -20,6 +20,11 @@ jobs:
           # actions/checkout refuses any path outside the workspace.
           ref: b42f6e6ff942c7f8a2856f8142ebffc13aa11098
           path: .deps/datom-source
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/org-nist-sha2
+          ref: e7c1b250adf3291ef99424fa85d8e7381cb086fb
+          path: .deps/org-nist-sha2
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

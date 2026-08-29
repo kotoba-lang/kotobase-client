@@ -1,9 +1,9 @@
 {:paths ["src"]
  ;; cljs-only (no reader-conditionals) -- consumed as a shadow-cljs
  ;; :source-path by the aozora PDS / AppView / SPA workers and by
- ;; kami-genko. No JVM deps; npm deps (@noble/curves, @noble/hashes,
- ;; @ipld/dag-cbor) are provided by the consumer's package.json (see this
- ;; repo's package.json for the standalone test build).
+ ;; kami-genko. No JVM deps; npm deps (@noble/curves, @ipld/dag-cbor)
+ ;; are provided by the consumer's package.json (see this repo's package.json
+ ;; for the standalone test build). SHA-256 is org-nist-sha2 via source-path.
  :deps {}
  :aliases
  {;; **Test-scoped, and that placement is the point.** This repo is consumed as
