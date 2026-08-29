@@ -327,3 +327,31 @@
                                  (is (= 3 @calls) "2 transient 500s then commit")
                                  (done)))
                         (.catch (fn [e2] (is false (str "opt-in transact should retry: " e2)) (done))))))))))
+
+;; ── Biscuit auth-profile (ADR-2608291500) ────────────────────────────────────
+;; A :biscuit-fn client sends `Authorization: Biscuit <t>` (never CACAO), passes
+;; NO cacao_b64 in the body, and hands the fn the exact db_name it is writing so
+;; the token can be scoped to kotobase/db/<tenant>/<db_name>. The default CACAO
+;; path is untouched (proved by every other test in this file).
+(deftest biscuit-transact-envelope
+  (async done
+    (let [sink (atom nil)
+          seen-db (atom :unset)
+          bfn (fn [db] (reset! seen-db db) (js/Promise.resolve "TESTBISCUITTOKEN"))
+          c (kc/make-client {:endpoint endpoint :biscuit-fn bfn
+                             :fetch-fn (capturing-fetch sink)})]
+      (-> (kc/transact c "yoro-social-v2" "[{:db/id \"k/1\" :a 1}]")
+          (.then (fn [_]
+                   (is (= "Biscuit TESTBISCUITTOKEN" (header-of sink "authorization")))
+                   (is (nil? (:cacao_b64 (body-of sink))) "no CACAO in a Biscuit request body")
+                   (is (= "yoro-social-v2" (:db_name (body-of sink))) "db_name still sent for edge graph derivation")
+                   (is (= "yoro-social-v2" @seen-db) "biscuit-fn is told the target db_name")
+                   (done)))
+          (.catch (fn [e] (is false (str "biscuit transact failed: " e)) (done)))))))
+
+(deftest biscuit-client-needs-no-secret-key
+  ;; The datom plane is Biscuit-required; a Biscuit client authenticates by
+  ;; header, so make-client must accept it with neither :secret-key nor :did.
+  (is (some? (kc/make-client {:endpoint endpoint
+                              :biscuit-fn (fn [_] (js/Promise.resolve "t"))
+                              :fetch-fn (capturing-fetch (atom nil))}))))
