@@ -111,9 +111,9 @@
   `verify-grant` refuses a grant without it under
   `:require-tenant-binding? true`; absent, nothing changes."
   [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile
-           transport tenant-id]}]
-  (when (and (nil? secret-key) (nil? did))
-    (throw (js/Error. "make-client needs :secret-key or :did")))
+           transport tenant-id biscuit-fn]}]
+  (when (and (nil? secret-key) (nil? did) (nil? biscuit-fn))
+    (throw (js/Error. "make-client needs :secret-key, :did, or :biscuit-fn")))
   {:endpoint (str/replace endpoint #"/+$" "")
    :secret-key secret-key
    :operator-did operator-did
@@ -121,8 +121,17 @@
    :auth-profile (or auth-profile :apex)
    :transport (or transport :xrpc)
    :tenant-id tenant-id
+   ;; Biscuit auth-profile (ADR-2608291500): when present, `(biscuit-fn db_name)`
+   ;; returns Promise<base64url-token> for the graph kotobase/db/<tenant>/<db_name>
+   ;; and the XRPC transport sends `Authorization: Biscuit <t>` instead of
+   ;; minting a CACAO. The edge derives the write/read graph from `db_name`
+   ;; against the Biscuit's verified tenant, so a Biscuit client needs no
+   ;; Ed25519 signing key — the datom plane went Biscuit-required (net-kotobase
+   ;; ADR-2608280230) and CACAO no longer authenticates ordinary tenant
+   ;; reads/writes there.
+   :biscuit-fn biscuit-fn
    :fetch (or fetch-fn js/fetch)
-   :did (or did (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 secret-key)))})
+   :did (or did (some-> secret-key (as-> sk (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 sk)))))})
 
 (def ^:private db-name-note
   "Why authenticated XRPC read bodies carry `db_name` beside `graph`.
@@ -178,7 +187,9 @@
   carry the client's `:tenant-id` when it has one."
   ([client op-caps graph] (request-cacao client op-caps graph nil))
   ([client op-caps graph {:keys [ttl-sec purpose] :or {ttl-sec default-ttl-sec}}]
-   (when-let [secret-key (:secret-key client)]
+   ;; Biscuit clients carry their auth in the Authorization header, not a
+   ;; minted CACAO — skip signing entirely (they may have no secret-key).
+   (when-let [secret-key (and (nil? (:biscuit-fn client)) (:secret-key client))]
      (:cacao-b64
       (if (= :legacy (:auth-profile client))
         (cacao/mint-cacao {:secret-key secret-key
@@ -246,33 +257,48 @@
   transact result, masking the failure end-to-end. Fixing it here, once,
   covers every caller of transact/datoms/q/pull uniformly."
   [client method body cacao-b64]
-  (let [{:keys [endpoint fetch did]} client
-        headers #js {"content-type" "application/json"
-                     "user-agent" user-agent}
-        full-body (cond-> body cacao-b64 (assoc :cacao_b64 cacao-b64))]
-    (when cacao-b64
-      (aset headers "authorization" (str "CACAO " cacao-b64))
-      (aset headers "x-kotoba-did" did))
-    (-> (fetch (str endpoint "/xrpc/" datomic-ns "." method)
-               #js {:method "POST"
-                    :headers headers
-                    :body (js/JSON.stringify (clj->js full-body))})
-        (.then (fn [^js res]
-                 (.then (.text res)
-                        (fn [text]
-                          (if-not (.-ok res)
-                            (let [e (js/Error. (str method " " (.-status res) ": " text))]
-                              (set! (.-status e) (.-status res))
-                              (throw e))
-                            (let [^js parsed (if (seq text) (js/JSON.parse text) #js {})]
-                              (if (false? (.-ok parsed))
-                                (let [e (js/Error. (str method " " (.-status res) " ok:false "
-                                                        (or (.-error parsed) "LogicalFailure")
-                                                        (when (.-message parsed) (str ": " (.-message parsed)))))]
-                                  (set! (.-status e) (.-status res))
-                                  (set! (.-body e) parsed)
-                                  (throw e))
-                                parsed))))))))))
+  (let [{:keys [endpoint fetch did biscuit-fn]} client
+        ;; Resolve auth first: a Biscuit client fetches a fresh (cached) token;
+        ;; a CACAO client already minted one. The default (no biscuit-fn) path
+        ;; is byte-for-byte unchanged.
+        ;; A Biscuit is scoped to exactly one graph = kotobase/db/<tenant>/<db_name>,
+        ;; so the fn is told which db_name this call targets and returns a token
+        ;; bound to it (mint/cache per db_name). Reads and writes both carry
+        ;; :db_name in the body; graph-only calls pass nil.
+        auth-promise (if biscuit-fn
+                       (-> (biscuit-fn (:db_name body))
+                           (.then (fn [tok] {:header (str "Biscuit " tok) :cacao nil})))
+                       (js/Promise.resolve {:header (when cacao-b64 (str "CACAO " cacao-b64))
+                                            :cacao cacao-b64}))]
+    (-> auth-promise
+        (.then
+         (fn [{:keys [header cacao]}]
+           (let [headers #js {"content-type" "application/json"
+                              "user-agent" user-agent}
+                 full-body (cond-> body cacao (assoc :cacao_b64 cacao))]
+             (when header
+               (aset headers "authorization" header)
+               (when did (aset headers "x-kotoba-did" did)))
+             (-> (fetch (str endpoint "/xrpc/" datomic-ns "." method)
+                        #js {:method "POST"
+                             :headers headers
+                             :body (js/JSON.stringify (clj->js full-body))})
+                 (.then (fn [^js res]
+                          (.then (.text res)
+                                 (fn [text]
+                                   (if-not (.-ok res)
+                                     (let [e (js/Error. (str method " " (.-status res) ": " text))]
+                                       (set! (.-status e) (.-status res))
+                                       (throw e))
+                                     (let [^js parsed (if (seq text) (js/JSON.parse text) #js {})]
+                                       (if (false? (.-ok parsed))
+                                         (let [e (js/Error. (str method " " (.-status res) " ok:false "
+                                                                 (or (.-error parsed) "LogicalFailure")
+                                                                 (when (.-message parsed) (str ": " (.-message parsed)))))]
+                                           (set! (.-status e) (.-status res))
+                                           (set! (.-body e) parsed)
+                                           (throw e))
+                                         parsed))))))))))))))
 
 (defn- post-store
   "POST one portable IStore method with a freshly minted apex CACAO. Returns
@@ -638,8 +664,8 @@
   `novelty_size` read still finds a value either way."
   ([client db-name tx-edn] (transact client db-name tx-edn nil))
   ([client db-name tx-edn {:keys [ttl-sec retry?] :or {ttl-sec default-ttl-sec}}]
-   (when-not (:secret-key client)
-     (throw (js/Error. "transact needs a :secret-key (write) client")))
+   (when-not (or (:secret-key client) (:biscuit-fn client))
+     (throw (js/Error. "transact needs a :secret-key or :biscuit-fn (write) client")))
    (if (= :direct-v1 (:transport client))
      (let [ref (v1-ref client db-name)
            ;; mint inside the thunk — fresh nonce per retry attempt (see q).
@@ -682,8 +708,8 @@
   `fold` response field."
   ([client db-name] (fold client db-name nil))
   ([client db-name {:keys [ttl-sec max-novelty views] :or {ttl-sec default-ttl-sec}}]
-   (when-not (:secret-key client)
-     (throw (js/Error. "fold needs a :secret-key (write) client")))
+   (when-not (or (:secret-key client) (:biscuit-fn client))
+     (throw (js/Error. "fold needs a :secret-key or :biscuit-fn (write) client")))
    (if (= :direct-v1 (:transport client))
      (let [ref (v1-ref client db-name)
            opts (cond-> {}
