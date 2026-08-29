@@ -8,11 +8,11 @@
   edge can recompute exactly this from the caller DID + db_name and pin it
   into every write (a client-supplied graph can never override it).
 
-  ClojureScript-only (not .cljc): the SHA-256 seam is @noble/hashes, which has
-  no JVM analogue here. All ops are synchronous (noble sha256 is sync), unlike
-  the SDK's async crypto.subtle path."
+  ClojureScript-only (not .cljc): SHA-256 is kotoba-lang/org-nist-sha2
+  (`sha2.core`), which has no JVM analogue here. All ops are synchronous,
+  unlike the SDK's async crypto.subtle path."
   (:require [clojure.string :as str]
-            ["@noble/hashes/sha2.js" :refer [sha256]]))
+            [sha2.core :as sha2]))
 
 (def ^:private b58-alphabet
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
@@ -25,6 +25,15 @@
 
 (defn ^js text->bytes [^string s]
   (.encode (js/TextEncoder.) s))
+
+(defn- bytes-from-u8 [^js u8]
+  (vec (js/Array.from u8)))
+
+(defn- u8-from-bytes [bytes]
+  (let [n (count bytes)
+        out (js/Uint8Array. n)]
+    (dotimes [i n] (aset out i (nth bytes i)))
+    out))
 
 (defn base58btc
   "base58btc(multibase 'z' payload). Port of the edge's base58btcEncode."
@@ -191,7 +200,7 @@
   "KotobaCid::from_bytes(name).to_multibase(): SHA-256(name) behind a
   CIDv1/dag-cbor/sha2-256 header (0x01 0x71 0x12 0x20), base32-lower 'b'."
   [^string name]
-  (let [hash (sha256 (text->bytes name))
+  (let [hash (u8-from-bytes (sha2/sha256 (bytes-from-u8 (text->bytes name))))
         cid (js/Uint8Array. 36)]
     (aset cid 0 0x01)
     (aset cid 1 0x71)
