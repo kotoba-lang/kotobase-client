@@ -51,6 +51,27 @@
                :ok (and (>= status 200) (< status 300))
                :arrayBuffer (fn [] (js/Promise.resolve (.-buffer (or body (u8)))))})))]))
 
+(defn error-type
+  "The `:type` the code under test attached, on either runtime.
+
+   nbb/SCI wraps a `throw` raised inside a `.then` callback: `ex-data`
+   becomes `{:type :sci/error :line … :sci.impl/callstack …}` and the
+   original moves to `ex-cause`. Measured 2026-09-06 — five assertions here
+   read `:sci/error` under nbb and the right keyword under shadow-cljs.
+
+   Reading `:type` directly would make the same assertion true on one
+   runtime and false on the other, so a fleet node running this suite would
+   report a runtime difference as a defect in the library. Unwrapping is
+   bounded rather than a `loop` on `ex-cause` alone: a cycle would hang the
+   gate instead of failing it."
+  [e]
+  (loop [e e depth 0]
+    (when (and e (< depth 8))
+      (let [t (:type (ex-data e))]
+        (if (and t (not= t :sci/error))
+          t
+          (recur (ex-cause e) (inc depth)))))))
+
 (defn- caught-type
   "Run `p` and resolve with the `:type` of whatever it rejected with, or
    `:kotobase.blocks-test/resolved` if it did not reject at all. Never
@@ -58,7 +79,7 @@
   [p]
   (-> p
       (.then (fn [_] ::resolved))
-      (.catch (fn [e] (or (:type (ex-data e)) ::not-ex-info)))))
+      (.catch (fn [e] (or (error-type e) ::not-ex-info)))))
 
 ;; ── multibase ───────────────────────────────────────────────────────────────
 
