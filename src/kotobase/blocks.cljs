@@ -205,6 +205,11 @@
                    address from the bytes rather than trusting the route.
    `:fetch-fn`     injected `fetch` (default the global one) — the seam the
                    tests drive, and the seam a caller uses to add a cache.
+   `:authorization` the `Authorization` value `put-block!` sends, or a
+                   0-arg function returning one. A function is the useful
+                   form: a CACAO expires and its nonce is single-use, so a
+                   client that outlives either must mint the next one.
+                   Reads ignore this entirely.
 
    The returned map is deliberately the shape
    `kotoba-lang/kotobase-storage-ipfs` asks for
@@ -216,10 +221,15 @@
    `:put-block!` is absent on purpose. Writing needs a CACAO and belongs to
    `kotobase.client`; a store built from this one is read-only and will say
    so by failing to satisfy a write, rather than by pretending."
-  [{:keys [endpoint path-prefix fetch-fn]}]
+  [{:keys [endpoint path-prefix fetch-fn authorization]}]
   (let [endpoint (or endpoint default-endpoint)
         path-prefix (or path-prefix default-path-prefix)
-        f (or fetch-fn (.-fetch js/globalThis))]
+        f (or fetch-fn (.-fetch js/globalThis))
+        ;; A thunk, not a captured string: a CACAO carries a short TTL and a
+        ;; single-use nonce, so a client that outlives one of them must be
+        ;; able to mint the next. Holding the value would quietly turn this
+        ;; into a client that stops working after five minutes.
+        resolve-auth (fn [] (if (fn? authorization) (authorization) authorization))]
     {:endpoint endpoint
      :path-prefix path-prefix
      :get-block
@@ -255,8 +265,15 @@
                                            {:type ::corrupt :cid cid
                                             :bytes (.-length bytes)})))))))))))))
 
+     ;; Two arities on purpose. `kotobase-storage-ipfs`'s injected-client
+     ;; contract is `(put-block! cid bytes)` and validates with `ifn?`, which
+     ;; a 3-arity-only function would satisfy and then fail at the first
+     ;; call — green wiring, broken write. The 3-arity form stays for a
+     ;; caller that mints per request without configuring the client.
      :put-block!
-     (fn put-block! [cid ^js bytes authorization]
+     (fn put-block!
+       ([cid bytes] (put-block! cid bytes (resolve-auth)))
+       ([cid ^js bytes authorization]
        ;; Verify before the network, not after. The origin checks too, but a
        ;; caller that mis-addressed a block should learn that from its own
        ;; code rather than from a 400 that looks like a service problem.
@@ -288,4 +305,4 @@
                                   {:type ::rejected :cid cid :status status}))
                   :else
                   (throw (ex-info (str "block contribution failed: HTTP " status)
-                                  {:type ::http :cid cid :status status}))))))))}))
+                                  {:type ::http :cid cid :status status})))))))))}))
