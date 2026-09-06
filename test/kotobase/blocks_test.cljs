@@ -281,3 +281,28 @@
                              (is (= expected t) (str "HTTP " status))
                              t)))))))
           (.then (fn [_] (done)))))))
+
+(deftest put-block-satisfies-the-injected-client-contract-at-two-arguments
+  ;; `kotobase-storage-ipfs`'s `open` validates its client with `ifn?` and
+  ;; then calls `(put-block! cid bytes)`. A 3-arity-only function passes that
+  ;; validation and fails at the first write — wiring that looks green.
+  (async done
+    (let [body (u8 7 7)
+          c (cid-for body)
+          minted (atom 0)
+          [seen f] (fetch-recording (constantly 204))
+          {:keys [put-block!]} (blocks/client
+                                {:fetch-fn f
+                                 :authorization (fn [] (swap! minted inc)
+                                                  (str "CACAO minted-" @minted))})]
+      (-> (put-block! c body)
+          (.then (fn [returned]
+                   (is (= c returned))
+                   (is (= "CACAO minted-1" (:authorization (first @seen))))
+                   (-> (put-block! c body)
+                       (.then (fn [_]
+                                (is (= "CACAO minted-2" (:authorization (second @seen)))
+                                    "a thunk is re-invoked per write — a CACAO nonce is single-use")
+                                (is (= 2 @minted))
+                                (done))))))
+          (.catch (fn [e] (is false (str "unexpected rejection: " e)) (done)))))))
