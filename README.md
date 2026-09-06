@@ -19,6 +19,25 @@ kotobase.net tenant plane this repo is specific to).
   CACAOs. Transient 5xx from the kotoba-wasm tenant worker (its "Invalid
   array buffer length" db-load flake) are retried on idempotent reads;
   `transact` opts in via `:retry?` for idempotent keyed re-asserts.
+- `kotobase.blocks` — **CID-verified block reads over `GET /ipld/<cid>`**, the
+  rung below every other read here. `client/q` POSTs a query and the Worker
+  executes it; `kotobase.datom-source` moved the algebra to the caller but
+  still reads through `datomic.datoms`. This one asks only for bytes and
+  re-derives the address from what actually arrived, so a page holding no key
+  can prove for itself that it got the block it named. `put-block!`
+  contributes one (the origin requires `kotoba://can/kotobase:pin`), taking an
+  Authorization value the caller minted — nothing in this namespace can sign.
+  Composes straight into `kotoba-lang/kotobase-storage-ipfs`, whose injected
+  client is the same `{:get-block :put-block!}` shape.
+
+  A read that cannot be checked is refused rather than returned: a multihash
+  this code cannot compute rejects with `:unsupported-multihash` instead of
+  answering `false`, because "could not check" and "checked and it was wrong"
+  are different answers. `npm run test:live-blocks` (with
+  `KOTOBASE_LIVE_BLOCKS=1`) contributes one block to the real plane, reads it
+  back, and runs four negative controls; it exits non-zero rather than
+  printing PASS if fewer checks completed than expected.
+
 - `kotobase.cacao` — SIWE/EIP-4361 message + Ed25519 did:key CACAO, DAG-CBOR
   encoded. The SAME source the cljs PDS verifies with, so client and server
   can't drift.
