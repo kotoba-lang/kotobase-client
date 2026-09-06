@@ -15,9 +15,20 @@
   ;; Without it there was no way to run these tests outside a consumer:
   ;; measured 2026-08-18, `Could not find namespace: datom.source` before any
   ;; assertion, which is why this repo had no fleet gate of any kind.
+  ;; org-nist-sha2 joined datom-source here on 2026-09-06, for the same
+  ;; reason and with the same placement. `kotobase.cid` moved SHA-256 from
+  ;; @noble/hashes to `sha2.core`, and `kotobase.blocks` reads it too; the
+  ;; suite had been resolving it through a `.deps/org-nist-sha2` symlink,
+  ;; which exists on a developer's machine and nowhere else. `git-deps-of`
+  ;; scans this whole file for `:git/sha`, aliases included, so a test-scoped
+  ;; entry is shipped to a fleet node exactly like a top-level one would be —
+  ;; without changing what a consumer resolves, which is what keeps this out
+  ;; of `:deps`.
   :test {:extra-paths ["test"]
          :extra-deps {io.github.kotoba-lang/datom-source
-                      {:git/sha "d3f021095f6df3a11bf8135471a1a8ec865f7ee3"}}}
+                      {:git/sha "d3f021095f6df3a11bf8135471a1a8ec865f7ee3"}
+                      io.github.kotoba-lang/org-nist-sha2
+                      {:git/sha "cb67e53e590e0999d741523797729a3d747cda95"}}}
   ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
          :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
