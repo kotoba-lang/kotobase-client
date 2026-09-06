@@ -17,4 +17,8 @@
          :ns-regexp "-test$"}
   :live-e2e {:target :node-script
              :output-to "out/live-e2e.js"
-             :main kotobase.live-e2e/main}}}
+             :main kotobase.live-e2e/main}
+  ;; Reads only, no credential — the acceptance for kotobase.blocks.
+  :live-blocks {:target :node-script
+                :output-to "out/live-blocks.js"
+                :main kotobase.live-blocks/main}}}
