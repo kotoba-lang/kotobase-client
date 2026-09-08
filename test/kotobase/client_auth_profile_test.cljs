@@ -12,7 +12,7 @@
   edge's two capability/scope predicates locally, verify the Ed25519
   signature, and prove nonce freshness across requests AND retry attempts."
   (:require [cljs.test :refer-macros [deftest is testing async]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             ["@noble/curves/ed25519.js" :refer [ed25519]]
             ["@ipld/dag-cbor" :as dag-cbor]
             [kotobase.cid :as cid]

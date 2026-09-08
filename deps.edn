@@ -4,7 +4,12 @@
  ;; kami-genko. No JVM deps; npm deps (@noble/curves, @ipld/dag-cbor)
  ;; are provided by the consumer's package.json (see this repo's package.json
  ;; for the standalone test build). SHA-256 is org-nist-sha2 via source-path.
- :deps {}
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       }
  :aliases
  {;; **Test-scoped, and that placement is the point.** This repo is consumed as
   ;; a shadow-cljs `:source-path`, so a consumer supplies `datom.source` at

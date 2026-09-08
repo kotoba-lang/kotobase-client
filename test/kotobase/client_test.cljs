@@ -1,6 +1,6 @@
 (ns kotobase.client-test
   (:require [cljs.test :refer-macros [deftest is testing]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [kotobase.client :as client]))
 
 (deftest decode-edn-scalar-cases

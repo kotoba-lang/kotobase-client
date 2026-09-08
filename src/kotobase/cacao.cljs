@@ -22,7 +22,7 @@
     from db_name so the scope must match)."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
             ["@ipld/dag-cbor" :as dag-cbor]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [kotobase.cid :as cid]))
 
 ;; ── encodings ──────────────────────────────────────────────────────────────
