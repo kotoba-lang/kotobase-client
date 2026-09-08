@@ -4,7 +4,7 @@
   A fake fetch captures the request; no network. Complements cacao-test (which
   proves the signature) by pinning the request shape the edge dispatches on."
   (:require [cljs.test :refer-macros [deftest is testing async]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             ["@noble/curves/ed25519.js" :refer [ed25519]]
             [kotobase.cid :as cid]
             [kotobase.client :as kc]))

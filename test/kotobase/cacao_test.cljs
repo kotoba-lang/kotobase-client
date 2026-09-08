@@ -4,7 +4,7 @@
   payload, and check the Ed25519 signature verifies under the issuer key —
   this is precisely verifyWorkerB2Cacao's check, run locally."
   (:require [cljs.test :refer-macros [deftest is testing]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             ["@noble/curves/ed25519.js" :refer [ed25519]]
             ["@ipld/dag-cbor" :as dag-cbor]
             [kotobase.cid :as cid]

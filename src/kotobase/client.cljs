@@ -71,7 +71,7 @@
     depending on a field."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
             [cljs.reader :as reader]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [kotobase.cid :as cid]
             [kotobase.cacao :as cacao]))
 
@@ -573,7 +573,7 @@
            ;; not individually EDN-encoded — matches the XRPC path's own
            ;; `components_edn` convention (kotobase-server's `do-datoms`
            ;; consumes it as `(vec components_edn)`, no per-element read-string).
-           options (cond-> {:index (keyword (str/lower-case (str/replace index #"^:" "")))}
+           options (cond-> {:index (keyword (str/lower (str/replace index #"^:" "")))}
                      (seq components) (assoc :components (vec components))
                      limit (assoc :limit limit))]
        (empty-on-404 #js {:datoms #js []}

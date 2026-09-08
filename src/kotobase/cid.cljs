@@ -11,7 +11,7 @@
   ClojureScript-only (not .cljc): SHA-256 is kotoba-lang/org-nist-sha2
   (`sha2.core`), which has no JVM analogue here. All ops are synchronous,
   unlike the SDK's async crypto.subtle path."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [sha2.core :as sha2]))
 
 (def ^:private b58-alphabet

@@ -1,6 +1,6 @@
 (ns kotobase.cid-test
   (:require [cljs.test :refer-macros [deftest is testing]]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             ["@noble/curves/ed25519.js" :refer [ed25519]]
             [kotobase.cid :as cid]))
 
