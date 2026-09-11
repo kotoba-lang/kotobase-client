@@ -2,7 +2,7 @@
   "The portable half of this suite, for a runtime that is not shadow-cljs.
 
       npx nbb --classpath src:test:<datom-source>/src:<org-nist-sha2>/src \\
-        test/run_tests.cljs
+        test/run_tests.cljk
 
   `npm test` remains the full suite. This entry exists so a fleet node can
   run one — `:nbb-test` is what the node has, and until now nothing outside a
