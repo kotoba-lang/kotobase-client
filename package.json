@@ -8,8 +8,8 @@
     "shadow-cljs": "^2.28.20"
   },
   "scripts": {
-    "test": "shadow-cljs compile test && node out/node-tests.js",
-    "test:live": "shadow-cljs compile live-e2e && node out/live-e2e.js",
-    "test:live-blocks": "shadow-cljs compile live-blocks && node out/live-blocks.js"
+    "test": "amu compile --target wasm32-browser test && node out/node-tests.js",
+    "test:live": "amu compile --target wasm32-browser live-e2e && node out/live-e2e.js",
+    "test:live-blocks": "amu compile --target wasm32-browser live-blocks && node out/live-blocks.js"
   }
 }
