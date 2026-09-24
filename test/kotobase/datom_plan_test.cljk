@@ -2,7 +2,7 @@
   "Portable — this suite runs on the JVM too, which is the reason the plan
   was extracted: `kotobase-server` reads it from `.cljc` code that its own
   tests exercise under Clojure."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotobase.datom-plan :as plan]))
 
 (deftest bound-positions-choose-the-index
