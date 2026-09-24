@@ -38,7 +38,36 @@ kotobase.net tenant plane this repo is specific to).
   back, and runs four negative controls; it exits non-zero rather than
   printing PASS if fewer checks completed than expected.
 
-- `kotobase.cacao` — SIWE/EIP-4361 message + Ed25519 did:key CACAO, DAG-CBOR
+- `kotobase.authn` — **the Authn exchange (superproject ADR-2609241800
+  step 4).** An actor holding a did:key (or a tenant's `kb_sa_…`
+  service-account secret) signs in at `auth.kotoba.cloud` only —
+  `POST /v1/cacao/session` with a CACAO minted by
+  `kotoba-lang/org-chainagnostic-cacao`, or `POST /v1/agents/register` for an
+  Ethereum-key agent, or a Bearer service-account token — and exchanges that
+  at `POST /v1/biscuit/token` for a 15-minute Biscuit, cached per resource and
+  re-minted a minute before expiry. It refuses, by name, to send a CACAO or a
+  `kb_sa_` secret to any other host (`:kotobase.authn/cacao-not-for-this-host`,
+  `:kotobase.authn/bearer-not-for-this-host`).
+
+  ```clojure
+  (require '[kotobase.authn :as authn] '[kotobase.client :as kc])
+  (def ex (authn/authn {:tenant-id "t_…" :secret-key seed}))   ; or :service-account-token
+  (def c  (kc/make-client {:endpoint "https://…" :secret-key seed :authn ex}))
+  (kc/auth-mode c)   ;=> :biscuit — every request carries `authorization: Biscuit …`
+  ```
+
+  A client given `:authn` (or `:biscuit-fn`) is in `:biscuit` mode on all
+  three surfaces (XRPC, `store-*`, `:direct-v1`); one given neither keeps the
+  old self-minted CACAO path, now named `:legacy-cacao`, unchanged. The
+  principal must be a member of the tenant — Authn answers 401 otherwise.
+  Consumers add `org-chainagnostic-cacao` (and, for attenuation,
+  `org-biscuitsec` + `dev-protobuf`) — the `:authn` alias in `deps.edn` —
+  because `kotobase.client` itself does not require them.
+- `kotobase.attenuate` — offline narrowing of a Biscuit Authn minted: append
+  a facts-only block (`:before`, `:holder`, `:caps`) with
+  `org-biscuitsec`'s `biscuit.wire/append-block`, no network, no issuer key.
+- `kotobase.cacao` — **legacy** (ADR-2609241800; kept for `:legacy-cacao`).
+  SIWE/EIP-4361 message + Ed25519 did:key CACAO, DAG-CBOR
   encoded. The SAME source the cljs PDS verifies with, so client and server
   can't drift.
 - `kotobase.cid` — did:key ⇄ Ed25519 pubkey, base58btc/base32/base36,

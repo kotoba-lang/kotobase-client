@@ -68,7 +68,28 @@
     are wrapped to the SAME `.-datoms`/`.-rows` JS shape callers already
     read; `transact`/`fold`/`pull`/`q` are NOT byte-compatible with XRPC —
     read this ns's `v1-*` fn docstrings for their exact native shape before
-    depending on a field."
+    depending on a field.
+
+  ── auth mode (`make-client` `:auth-mode`, superproject ADR-2609241800) ────
+  Two modes, and which one a client is in is a fact you can ask for
+  (`auth-mode`):
+
+  * `:biscuit` — every request carries `authorization: Biscuit <b64url>` and
+    never a CACAO. The token comes from `:authn` (a `kotobase.authn/authn`
+    exchanger: CACAO or kb_sa_ secret presented at auth.kotoba.cloud ONLY,
+    exchanged for a 15-minute Biscuit, re-minted before expiry) or from a
+    caller-supplied `:biscuit-fn`. **This is the default whenever `:authn`
+    or `:biscuit-fn` is given.** Covers all three surfaces: XRPC `post`,
+    the IStore `store-*`, and `:direct-v1`.
+  * `:legacy-cacao` — the self-minted CACAO path documented above (the
+    `:auth-profile` shapes, `request-cacao`, `v1-cacao`). **LEGACY.** It
+    authenticates at the data edge with a CACAO, which ADR-2609241800 ends:
+    CACAO is accepted only at Authn, and kotobase.net's CACAO transact has
+    answered 401 since 2026-08-29. It stays, byte-for-byte, for callers that
+    have not moved: it is still the default for a client configured with
+    neither `:authn` nor `:biscuit-fn`, and it can be forced with
+    `:auth-mode :legacy-cacao` even when `:authn` is present (the exchanger
+    is then never called). Do not start new callers on it."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
             [cljs.reader :as reader]
             [kotoba.lang.text :as str]
@@ -109,12 +130,30 @@
   :tenant-id optional — when set, every CACAO this client mints carries
   `kotoba://tenant/<tenant-id>` in its SIGNED resources. `kotobase-server`'s
   `verify-grant` refuses a grant without it under
-  `:require-tenant-binding? true`; absent, nothing changes."
+  `:require-tenant-binding? true`; absent, nothing changes.
+  :authn optional — a `kotobase.authn/authn` exchanger. Makes `:biscuit` the
+  default auth mode (ns docstring); only its `:biscuit-fn` is read here, so
+  this ns does not depend on the CACAO or Biscuit libraries.
+  :auth-mode optional — `:biscuit` or `:legacy-cacao`. Default `:biscuit`
+  when `:authn` or `:biscuit-fn` is present, else `:legacy-cacao` (the
+  pre-2026-09-24 behaviour, unchanged). `:legacy-cacao` with `:authn` drops
+  the exchanger; `:biscuit` with neither throws."
   [{:keys [endpoint secret-key operator-did fetch-fn did public-reads? auth-profile
-           transport tenant-id biscuit-fn]}]
+           transport tenant-id biscuit-fn authn auth-mode]}]
+  (let [authn-fn (:biscuit-fn authn)
+        _ (when (and authn (not (fn? authn-fn)))
+            (throw (js/Error. "make-client :authn must be a kotobase.authn/authn exchanger (it carries :biscuit-fn)")))
+        token-fn (or biscuit-fn authn-fn)
+        mode (or auth-mode (if token-fn :biscuit :legacy-cacao))
+        _ (when-not (#{:biscuit :legacy-cacao} mode)
+            (throw (js/Error. (str "make-client :auth-mode must be :biscuit or :legacy-cacao, got " mode))))
+        _ (when (and (= :biscuit mode) (nil? token-fn))
+            (throw (js/Error. "make-client :auth-mode :biscuit needs :authn or :biscuit-fn")))
+        biscuit-fn (when (= :biscuit mode) token-fn)]
   (when (and (nil? secret-key) (nil? did) (nil? biscuit-fn))
     (throw (js/Error. "make-client needs :secret-key, :did, or :biscuit-fn")))
   {:endpoint (str/replace endpoint #"/+$" "")
+   :auth-mode mode
    :secret-key secret-key
    :operator-did operator-did
    :public-reads? (boolean public-reads?)
@@ -131,7 +170,28 @@
    ;; reads/writes there.
    :biscuit-fn biscuit-fn
    :fetch (or fetch-fn js/fetch)
-   :did (or did (some-> secret-key (as-> sk (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 sk)))))})
+   :did (or did (some-> secret-key (as-> sk (cid/did-key-from-ed25519-pub (.getPublicKey ed25519 sk)))))}))
+
+(defn auth-mode
+  "`:biscuit` or `:legacy-cacao` — see the ns docstring."
+  [client]
+  (:auth-mode client :legacy-cacao))
+
+(defn- biscuit-mode? [client] (some? (:biscuit-fn client)))
+
+(defn- refuse-cacao-in-biscuit-mode!
+  "The data edge never receives a CACAO from a Biscuit-mode client. Nothing
+  on that path mints one; this is the check that keeps it so."
+  [client cacao-b64 where]
+  (when (and (biscuit-mode? client) cacao-b64)
+    (throw (ex-info (str "cacao-not-for-this-host: a Biscuit-mode client refused to send a CACAO to " where)
+                    {:type :kotobase.client/cacao-not-for-this-host :where where}))))
+
+(defn- biscuit-header
+  "Promise<\"Biscuit <t>\"> for `db-name` (nil = the exchanger's default)."
+  [client db-name]
+  (-> ((:biscuit-fn client) db-name)
+      (.then (fn [tok] (str "Biscuit " tok)))))
 
 (def ^:private db-name-note
   "Why authenticated XRPC read bodies carry `db_name` beside `graph`.
@@ -174,11 +234,15 @@
   900)
 
 (defn request-cacao
-  "Mint ONE request's CACAO (fresh nonce — never reuse across requests or
+  "**LEGACY (ADR-2609241800)** — a data-edge CACAO; new callers use
+  `:authn` / `:auth-mode :biscuit` instead (ns docstring).
+
+  Mint ONE request's CACAO (fresh nonce — never reuse across requests or
   retry attempts; the apex records nonces for replay protection) granting
   `op-caps` (e.g. [\"datom:read\"] / [\"datom:transact\" \"tx:create\"]) over
   `graph`, shaped per the client's :auth-profile (ns docstring). nil when the
-  client has no :secret-key. Public so callers with custom methods (or a
+  client has no :secret-key, and nil for every `:biscuit`-mode client.
+  Public so callers with custom methods (or a
   bespoke transport) can mint the same auth the built-in q/datoms/pull/
   transact/fold use.
 
@@ -265,9 +329,10 @@
         ;; so the fn is told which db_name this call targets and returns a token
         ;; bound to it (mint/cache per db_name). Reads and writes both carry
         ;; :db_name in the body; graph-only calls pass nil.
+        _ (refuse-cacao-in-biscuit-mode! client cacao-b64 (str "xrpc " method))
         auth-promise (if biscuit-fn
-                       (-> (biscuit-fn (:db_name body))
-                           (.then (fn [tok] {:header (str "Biscuit " tok) :cacao nil})))
+                       (-> (biscuit-header client (:db_name body))
+                           (.then (fn [header] {:header header :cacao nil})))
                        (js/Promise.resolve {:header (when cacao-b64 (str "CACAO " cacao-b64))
                                             :cacao cacao-b64}))]
     (-> auth-promise
@@ -301,25 +366,33 @@
                                          parsed))))))))))))))
 
 (defn- post-store
-  "POST one portable IStore method with a freshly minted apex CACAO. Returns
-  the parsed wire envelope; public store helpers below project it back to the
-  five-method IStore contract while remaining Promise-based."
+  "POST one portable IStore method. Returns the parsed wire envelope; public
+  store helpers below project it back to the five-method IStore contract
+  while remaining Promise-based.
+
+  `:biscuit` mode: `authorization: Biscuit <t>` for the exchanger's default
+  `:db-name` (the IStore body names no db). `:legacy-cacao` mode: a freshly
+  minted apex CACAO, as before."
   [client method body write?]
-  (when-not (:secret-key client)
-    (throw (js/Error. "IStore access needs a :secret-key client")))
+  (when-not (or (:secret-key client) (biscuit-mode? client))
+    (throw (js/Error. "IStore access needs a :secret-key or Biscuit-mode client")))
   (let [{:keys [endpoint fetch did]} client
         ;; See `read-cacao`: both vocabularies, because the XRPC edge may
         ;; answer or may bridge to kotobase-storage-d1, which names the same
         ;; permissions differently.
         caps (if write? ["datom:transact" "tx:create"] ["datom:read" "graph:query"])
-        cacao-b64 (request-cacao client caps did)
-        headers #js {"content-type" "application/json"
-                     "user-agent" user-agent
-                     "authorization" (str "CACAO " cacao-b64)
-                     "x-kotoba-did" did}]
-    (-> (fetch (str endpoint "/xrpc/" store-ns "." (name method))
-               #js {:method "POST" :headers headers
-                    :body (js/JSON.stringify (clj->js body))})
+        auth (if (biscuit-mode? client)
+               (biscuit-header client nil)
+               (js/Promise.resolve (str "CACAO " (request-cacao client caps did))))]
+    (-> auth
+        (.then (fn [authorization]
+                 (let [headers #js {"content-type" "application/json"
+                                    "user-agent" user-agent
+                                    "authorization" authorization}]
+                   (when did (aset headers "x-kotoba-did" did))
+                   (fetch (str endpoint "/xrpc/" store-ns "." (name method))
+                          #js {:method "POST" :headers headers
+                               :body (js/JSON.stringify (clj->js body))}))))
         (.then (fn [^js response]
                  (.then (.text response)
                         (fn [text]
@@ -383,7 +456,9 @@
   (str "kotobase/db/" (:did client) "/" db-name))
 
 (defn- v1-cacao
-  "Mint a CACAO shaped for kotobase-storage-d1's own direct authorize() gate
+  "**LEGACY (ADR-2609241800)**; nil for a `:biscuit`-mode client.
+
+  Mint a CACAO shaped for kotobase-storage-d1's own direct authorize() gate
   (kotoba-lang/kotobase-storage-d1 `worker.mjs` TX_CAPABILITY/
   READ_CAPABILITY) — a single literal resource, `kotoba://can/datom:transact`
   or `kotoba://can/graph:query`, NOT the XRPC vocabulary's `datom:read`/
@@ -391,7 +466,7 @@
   has no :secret-key (direct-v1 has no anonymous-read path, so a nil here
   means the request WILL 401 — unlike XRPC's :public-reads? escape hatch)."
   [client capability ref ttl-sec]
-  (when-let [secret-key (:secret-key client)]
+  (when-let [secret-key (and (not (biscuit-mode? client)) (:secret-key client))]
     (:cacao-b64
      (cacao/mint-cacao {:secret-key secret-key :aud (:operator-did client)
                         :capability capability :graph ref :ttl-sec ttl-sec
@@ -404,13 +479,19 @@
   shape) — unlike XRPC's `post`, there is no `{:ok ...}` envelope to check:
   storage-d1's own worker.mjs only ever uses a non-2xx status for failure."
   [client method edn-body ref cacao-b64]
-  (let [{:keys [endpoint fetch did]} client
+  (refuse-cacao-in-biscuit-mode! client cacao-b64 (str "direct-v1 " method))
+  (let [{:keys [endpoint fetch]} client
         headers #js {"content-type" "application/edn" "x-kotobase-ref" ref
-                     "user-agent" user-agent}]
-    (when cacao-b64
-      (aset headers "authorization" (str "CACAO " cacao-b64)))
-    (-> (fetch (str endpoint (get v1-method->path method))
-               #js {:method "POST" :headers headers :body (pr-str edn-body)})
+                     "user-agent" user-agent}
+        ;; the db name is the ref's last segment: kotobase/db/<did>/<db-name>
+        auth (if (biscuit-mode? client)
+               (biscuit-header client (subs ref (count (v1-ref client ""))))
+               (js/Promise.resolve (when cacao-b64 (str "CACAO " cacao-b64))))]
+    (-> auth
+        (.then (fn [authorization]
+                 (when authorization (aset headers "authorization" authorization))
+                 (fetch (str endpoint (get v1-method->path method))
+                        #js {:method "POST" :headers headers :body (pr-str edn-body)})))
         (.then (fn [^js res]
                  (.then (.text res)
                         (fn [text]
