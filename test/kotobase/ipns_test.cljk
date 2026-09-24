@@ -75,3 +75,17 @@
         signed (ipns/sign-head seed record)]
     (is (= jvm-signed-fixture signed)
         "cljs sign-head reproduces the exact JVM ipns.head/sign output for the same seed+record")))
+
+(deftest graph-named-head-verifies-by-signature-only
+  ;; A graph head is named by a graph CID, which names no key. verify-head's
+  ;; name->key check therefore always refuses it (that refusal put every
+  ;; graph on datoms.kotobase.net at "no head", 2026-09-24); the signature
+  ;; check is what a graph head is verified by.
+  (let [sk (js/Uint8Array.from (clj->js (range 32)))
+        rec (ipns/sign-head sk {:name "bafyreigraph" :value "bafyreichain1" :sequence 3 :valid_until nil})]
+    (is (false? (:valid? (ipns/verify-head rec))) "k51 name check refuses a graph name, as designed")
+    (is (true? (ipns/verify-head-signature rec)) "the operator's signature over the record holds")
+    (is (false? (ipns/verify-head-signature (assoc rec :value "bafyreiattackerswap"))) "tampered value")
+    (is (false? (ipns/verify-head-signature (assoc rec :sequence 4))) "tampered sequence")
+    (is (false? (ipns/verify-head-signature (dissoc rec :signature_multibase))) "unsigned")
+    (is (false? (ipns/verify-head-signature (assoc rec :signature_multibase "z"))) "empty signature")))

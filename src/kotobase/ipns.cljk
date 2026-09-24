@@ -34,6 +34,29 @@
            :public_key_multibase (cid/did-key-from-ed25519-pub pub)
            :signature_multibase (str "z" (cid/base58btc sig)))))
 
+(defn verify-head-signature
+  "Signature-only check of a record `sign-head` produced: the signature over
+   the canonical dag-cbor payload verifies under the did:key in
+   `:public_key_multibase`. Says NOTHING about who may use `:name` --
+   `verify-head` adds that for k51 IPNS names.
+
+   Graph heads need exactly this and not `verify-head`: their `:name` is a
+   graph CID (`bafy...`), which names no key, so `verify-head`'s name->key
+   check can never pass for them (measured 2026-09-24: every graph head on
+   datoms.kotobase.net read as absent -- `kotobase head REJECTED ...
+   (signature-valid false)` -- and every write restarted from genesis). A
+   graph head's authority is the SIGNER, which the caller pins to its own
+   operator key (kotobase.graph-database.head/verified-state). -> boolean."
+  [record]
+  (let [{:keys [public_key_multibase signature_multibase]} record
+        pub (and (string? public_key_multibase) (cid/did-key->ed25519-pub public_key_multibase))
+        sig (and (string? signature_multibase) (seq signature_multibase)
+                 (try (cid/base58btc-decode (subs signature_multibase 1)) (catch :default _ nil)))]
+    ;; fail closed: a malformed signature (wrong length) makes noble throw
+    (boolean (and pub sig
+                  (try (.verify ed25519 sig (payload-bytes record) pub)
+                       (catch :default _ false))))))
+
 (defn verify-head
   "Verify a signed IPNS head record (as `sign-head` -- or the JVM
    `ipns.head/sign` -- produces). Returns `{:valid? bool :name ...}` --
@@ -61,5 +84,5 @@
                            ;; signature, so a forged name can never reach a
                            ;; verify that would say yes
                            (cid/ipns-name-matches-pub? (:name record) pub)
-                           (.verify ed25519 sig (payload-bytes record) pub)))
+                           (verify-head-signature record)))
      :name (:name record)}))
