@@ -1,6 +1,13 @@
 (ns kotobase.cacao
   "Self-issued CACAO minting for the kotobase.net tenant Datom write/read plane.
 
+  **LEGACY (superproject ADR-2609241800).** A CACAO presented at a data edge
+  is the pattern that ADR ends: CACAO is accepted only where Authn exchanges
+  it, and every service edge takes a Biscuit. This namespace stays for
+  `kotobase.client`'s `:legacy-cacao` mode and its existing callers; new code
+  uses `kotobase.authn` (which mints its one sign-in CACAO with
+  kotoba-lang/org-chainagnostic-cacao, not with this file).
+
   Byte-compatible with the edge (net-kotobase worker/src/app.cljc:
   Cacao / cacaoSiweMessage / verifyWorkerB2Cacao) and the pod (kotoba_auth::Cacao),
   ported from @gftd/kotobase-datomic (net-kotobase/sdk/kotobase-datomic/src/index.cljc).

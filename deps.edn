@@ -33,7 +33,33 @@
          :extra-deps {io.github.kotoba-lang/datom-source
                       {:git/sha "d3f021095f6df3a11bf8135471a1a8ec865f7ee3"}
                       io.github.kotoba-lang/org-nist-sha2
-                      {:git/sha "cb67e53e590e0999d741523797729a3d747cda95"}}}
+                      {:git/sha "cb67e53e590e0999d741523797729a3d747cda95"}
+                      ;; kotobase.authn / kotobase.attenuate (ADR-2609241800
+                      ;; step 4) and their suite. Same placement and reason as
+                      ;; above: `kotobase.client` does not require them, so a
+                      ;; consumer that never exchanges resolves nothing new.
+                      ;; Both are main tips on 2026-09-24 (gh api
+                      ;; repos/kotoba-lang/<repo>/commits/main). dev-protobuf
+                      ;; is org-biscuitsec's own pin, named here because
+                      ;; `git-deps-of` ships only what this file names.
+                      io.github.kotoba-lang/org-chainagnostic-cacao
+                      {:git/sha "4efc74ca2e53dbe9ea62d49189ea6ffa2eb0dd7b"}
+                      io.github.kotoba-lang/org-biscuitsec
+                      {:git/sha "12148e029497614f916b8745ac1b2871e2668ef1"}
+                      io.github.kotoba-lang/dev-protobuf
+                      {:git/sha "3f20b1e1cdbe89750d8afaf24f64777a2f170c3c"}}}
+  ;; What a CONSUMER of `kotobase.authn` (the Authn -> Biscuit exchange) and
+  ;; `kotobase.attenuate` (offline narrowing) adds. Kept out of `:deps` on
+  ;; purpose: git-dep consumers such as kotobase-control-plane's authn pin
+  ;; their own org-chainagnostic-cacao, and tools.deps would silently move it
+  ;; to the newest sha named anywhere. Source-path consumers add the same
+  ;; three `src` dirs to their :source-paths.
+  :authn {:extra-deps {io.github.kotoba-lang/org-chainagnostic-cacao
+                       {:git/sha "4efc74ca2e53dbe9ea62d49189ea6ffa2eb0dd7b"}
+                       io.github.kotoba-lang/org-biscuitsec
+                       {:git/sha "12148e029497614f916b8745ac1b2871e2668ef1"}
+                       io.github.kotoba-lang/dev-protobuf
+                       {:git/sha "3f20b1e1cdbe89750d8afaf24f64777a2f170c3c"}}}
   ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
   :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
          :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test"
