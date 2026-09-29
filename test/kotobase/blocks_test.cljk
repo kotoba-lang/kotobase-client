@@ -2,7 +2,7 @@
   "Every negative case here asserts the REASON, not just that something went
    wrong. A test that only checks `catch` fires counts a failure with an
    unrelated cause as a discrimination it never made — the shape superproject
-   CLAUDE.md names as the sixth question (`did this check ever refuse for the
+   AGENTS.md names as the sixth question (`did this check ever refuse for the
    reason it claims?`). So each rejection is pinned to its `:type`."
   (:require [cljs.test :refer-macros [deftest is testing async]]
             [sha2.core :as sha2]
