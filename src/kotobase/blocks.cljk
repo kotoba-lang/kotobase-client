@@ -36,7 +36,7 @@
   The fourth row is deliberate. A multihash we cannot recompute (anything but
   sha2-256) leaves us unable to *answer*, and an unanswerable check must not
   return the same value as a check that passed — so it refuses rather than
-  handing back bytes it did not verify. Superproject CLAUDE.md calls this
+  handing back bytes it did not verify. Superproject AGENTS.md calls this
   class out by name: an inspection that could not run must not look like an
   inspection that found nothing wrong.
 
